@@ -41,3 +41,96 @@ body {
     animation: ui-modal-panel-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────
+   Percentage slider — a solid blue scale line with arrow ends and
+   a hollow ring handle. Used by SettingPercentage
+   (App2Web rollout) in SettingsPage.
+   ────────────────────────────────────────────────────────────── */
+.range-line-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  padding: 0 16px;
+}
+
+/* Arrowheads pointing outward at each end of the scale */
+.range-line-wrap::before,
+.range-line-wrap::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.range-line-wrap::before {
+  left: 0;
+  border-right: 8px solid #2f54eb;
+}
+.range-line-wrap::after {
+  right: 0;
+  border-left: 8px solid #2f54eb;
+}
+
+.range-line {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.range-line:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Solid scale line — WebKit / Blink */
+.range-line::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 9999px;
+  background-color: #2f54eb;
+}
+/* Ring handle — WebKit / Blink */
+.range-line::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  width: 18px;
+  margin-top: -7.5px;
+  border-radius: 9999px;
+  background: #ffffff;
+  border: 3px solid #2f54eb;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+  transition: transform 0.1s ease;
+}
+.range-line:active::-webkit-slider-thumb {
+  transform: scale(1.08);
+}
+.range-line:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid #2f54eb;
+  outline-offset: 2px;
+}
+
+/* Solid scale line — Firefox */
+.range-line::-moz-range-track {
+  height: 3px;
+  border-radius: 9999px;
+  background-color: #2f54eb;
+}
+/* Ring handle — Firefox */
+.range-line::-moz-range-thumb {
+  height: 18px;
+  width: 18px;
+  border-radius: 9999px;
+  background: #ffffff;
+  border: 3px solid #2f54eb;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+}

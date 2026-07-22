@@ -1,4 +1,4 @@
-import { CheckCircle2, Gift, Loader2, Mail, X, XCircle } from 'lucide-react'
+import { CheckCircle2, Loader2, Mail, X, XCircle } from 'lucide-react'
 import { useEffect } from 'react'
 import {
   AUDIENCE_MULTI_ID_FIELD_CONFIG,
@@ -70,10 +70,6 @@ function emailInitial(email) {
  *   tagVariant: 'emerald' | 'teal'
  *   fields: { key: string, label: string }[]
  *   purchasePending?: boolean
- *   sessionPending?: boolean
- *   freeAccessPending?: boolean
- *   onToggleUnlimited?: (userId: string, currentlyEnabled: boolean) => void
- *   onToggleFreeAccess?: (userId: string, currentlyEnabled: boolean) => void
  * }} props
  */
 export default function OnboardingUserDetailModal({
@@ -83,10 +79,6 @@ export default function OnboardingUserDetailModal({
   tagVariant,
   fields,
   purchasePending = false,
-  sessionPending = false,
-  freeAccessPending = false,
-  onToggleUnlimited,
-  onToggleFreeAccess,
 }) {
   useEffect(() => {
     if (!row) return
@@ -231,94 +223,6 @@ export default function OnboardingUserDetailModal({
                         idLabelMap={multiCfg.idLabelMap}
                         variant={tagVariant}
                       />
-                    </dd>
-                  </div>
-                )
-              }
-              if (
-                key === 'canDoUnlimitedSessions' &&
-                (mode === 'users' || mode === 'audience')
-              ) {
-                const enabled = value === true
-                const sessionFocusRing =
-                  tagVariant === 'teal'
-                    ? 'focus-visible:ring-teal-500'
-                    : 'focus-visible:ring-emerald-500'
-                return (
-                  <div
-                    key={key}
-                    className="rounded-xl border border-slate-100/90 bg-white/80 p-3.5 shadow-sm ring-1 ring-slate-900/[0.02]"
-                  >
-                    <dt className="text-sm font-medium leading-snug text-slate-700">
-                      {fieldHeading}
-                    </dt>
-                    <dd className="mt-2">
-                      <button
-                        type="button"
-                        disabled={sessionPending}
-                        onClick={() => onToggleUnlimited?.(row.id, enabled)}
-                        className={`inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 ${sessionFocusRing} focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60 sm:w-auto ${
-                          enabled
-                            ? 'border-amber-200 bg-gradient-to-b from-amber-50 to-amber-100/50 text-amber-950 shadow-sm hover:from-amber-100 hover:to-amber-50'
-                            : 'border-slate-200 bg-white text-slate-800 shadow-sm hover:border-slate-300 hover:bg-slate-50'
-                        }`}
-                      >
-                        {sessionPending ? (
-                          <Loader2
-                            className="size-3.5 animate-spin"
-                            strokeWidth={2}
-                            aria-hidden
-                          />
-                        ) : null}
-                        {enabled
-                          ? 'Unlimited sessions on — switch to limited'
-                          : 'Limited sessions — allow unlimited'}
-                      </button>
-                    </dd>
-                  </div>
-                )
-              }
-              if (
-                key === 'freeAccess' &&
-                (mode === 'users' || mode === 'audience')
-              ) {
-                const enabled = value === true
-                const focusRing =
-                  tagVariant === 'teal'
-                    ? 'focus-visible:ring-teal-500'
-                    : 'focus-visible:ring-emerald-500'
-                return (
-                  <div
-                    key={key}
-                    className="rounded-xl border border-slate-100/90 bg-white/80 p-3.5 shadow-sm ring-1 ring-slate-900/[0.02]"
-                  >
-                    <dt className="text-sm font-medium leading-snug text-slate-700">
-                      {fieldHeading}
-                    </dt>
-                    <dd className="mt-2">
-                      <button
-                        type="button"
-                        disabled={freeAccessPending}
-                        onClick={() => onToggleFreeAccess?.(row.id, enabled)}
-                        className={`inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 ${focusRing} focus-visible:ring-offset-2 disabled:cursor-wait disabled:opacity-60 sm:w-auto ${
-                          enabled
-                            ? 'border-violet-200 bg-gradient-to-b from-violet-50 to-violet-100/50 text-violet-950 shadow-sm hover:from-violet-100 hover:to-violet-50'
-                            : 'border-slate-200 bg-white text-slate-800 shadow-sm hover:border-slate-300 hover:bg-slate-50'
-                        }`}
-                      >
-                        {freeAccessPending ? (
-                          <Loader2
-                            className="size-3.5 animate-spin"
-                            strokeWidth={2}
-                            aria-hidden
-                          />
-                        ) : (
-                          <Gift className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
-                        )}
-                        {enabled
-                          ? 'Free access on — click to revoke'
-                          : 'No free access — click to grant'}
-                      </button>
                     </dd>
                   </div>
                 )

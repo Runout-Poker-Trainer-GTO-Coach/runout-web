@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   BadgePercent,
+  Globe,
   Infinity as InfinityIcon,
   Loader2,
   Save,
@@ -29,10 +30,22 @@ import {
   APP_SETTINGS_DEFAULTS,
   APP_SETTINGS_FIELDS,
 } from './settingsConstants.js'
+import PercentageSlider from './PercentageSlider.jsx'
 
 /**
  * @param {Record<string, unknown> | undefined} data
  */
+/**
+ * Coerce any stored value into an integer percentage clamped to 0–100.
+ * @param {unknown} v
+ * @returns {number}
+ */
+function clampPercentage(v) {
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(100, Math.round(n)))
+}
+
 function parseSettings(data) {
   const d =
     data && typeof data === 'object'
@@ -44,6 +57,9 @@ function parseSettings(data) {
     showDiscountScreenIos: t(APP_SETTINGS_FIELDS.showDiscountScreenIos),
     showDiscountScreenAndroid: t(APP_SETTINGS_FIELDS.showDiscountScreenAndroid),
     unlimitedSessions: t(APP_SETTINGS_FIELDS.unlimitedSessions),
+    app2WebPercentage: clampPercentage(
+      d[APP_SETTINGS_FIELDS.app2WebPercentage],
+    ),
   }
 }
 
@@ -166,6 +182,13 @@ export default function SettingsPage() {
       setValues((v) => ({ ...v, ...p }))
     },
     [],
+  )
+
+  const setApp2WebPercentage = useCallback(
+    (/** @type {string | number} */ raw) => {
+      patch({ app2WebPercentage: clampPercentage(raw) })
+    },
+    [patch],
   )
 
   useEffect(() => {
@@ -361,6 +384,35 @@ export default function SettingsPage() {
               />
             </SettingsCard>
 
+            <SettingsCard
+              eyebrow="Paywall"
+              title="App2Web option"
+              description="Roll out the App2Web (web checkout) option to a share of users. The app reads app2WebPercentage from remote config and shows the option to that percentage of users."
+              icon={
+                <Globe
+                  className="size-5 text-sky-700"
+                  strokeWidth={2}
+                  aria-hidden
+                />
+              }
+            >
+              <PercentageSlider
+                id="set-app2web-percentage"
+                title="Show App2Web to a percentage of users"
+                description="0% hides it for everyone; 100% shows it to all users. Anything in between is a partial rollout."
+                value={values.app2WebPercentage}
+                onChange={setApp2WebPercentage}
+                disabled={saving}
+                icon={
+                  <Globe
+                    className="size-5 text-slate-700"
+                    strokeWidth={2}
+                    aria-hidden
+                  />
+                }
+              />
+            </SettingsCard>
+
             <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-slate-200/90 bg-white/95 px-4 py-4 shadow-[0_8px_40px_-12px_rgba(15,23,42,0.2)] backdrop-blur-md sm:flex-row sm:items-center sm:justify-between sm:px-5">
               <p className="text-sm font-medium text-slate-800">
                 {dirty ? 'Unsaved changes' : 'All changes saved'}
@@ -398,6 +450,7 @@ export default function SettingsPage() {
   "showDiscountScreenIos": false,
   "showDiscountScreenAndroid": false,
   "unlimitedSessions": false,
+  "app2WebPercentage": 0,
   "updatedAt": "<Firestore Timestamp>"
 }`}
               </pre>

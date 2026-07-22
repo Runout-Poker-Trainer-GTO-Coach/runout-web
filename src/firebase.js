@@ -38,6 +38,13 @@ export const usersCollectionName =
 export const questionsCollectionName =
   import.meta.env.VITE_FIRESTORE_QUESTIONS_COLLECTION?.trim() || 'questions'
 
+export const lessonReportsCollectionName =
+  import.meta.env.VITE_FIRESTORE_LESSON_REPORTS_COLLECTION?.trim() ||
+  'lesson-reports'
+
+export const userIdeasCollectionName =
+  import.meta.env.VITE_FIRESTORE_USER_IDEAS_COLLECTION?.trim() || 'user-ideas'
+
 /** Single document for app-wide remote config (e.g. discount UI flags). */
 export const settingsCollectionName =
   import.meta.env.VITE_FIRESTORE_SETTINGS_COLLECTION?.trim() || 'config'

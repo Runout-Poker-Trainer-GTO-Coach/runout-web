@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Free 30-day trial · Apple Pay</title>
+  <script src="https://js.stripe.com/v3/"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+      background: #000;
+      color: #fff;
+      min-height: 100vh;
+      min-height: 100dvh;
+      -webkit-font-smoothing: antialiased;
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    a { color: #526DF2; text-decoration: underline; }
+
+    .hero {
+      background: radial-gradient(120% 80% at 50% 0%, #1e2a7a 0%, #0a0f2a 55%, #000 100%);
+      padding: 32px 24px 28px;
+    }
+    .hero h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.5px; margin: 0 0 24px; }
+    .product-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .product-icon {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: #526DF2; display: grid; place-items: center; flex-shrink: 0;
+    }
+    .product-icon svg { width: 18px; height: 18px; fill: #fff; }
+    .product-label { font-size: 16px; font-weight: 500; color: #f5f5f7; }
+
+    .body { padding: 8px 24px 24px; }
+    .line {
+      display: flex; align-items: baseline; justify-content: space-between;
+      padding: 16px 0; border-bottom: 1px solid rgba(255,255,255,0.08);
+      font-size: 16px; color: #f5f5f7;
+    }
+    .line-label { color: rgba(255,255,255,0.85); }
+    .line-value { color: #f5f5f7; font-weight: 500; tab-size: 4; font-variant-numeric: tabular-nums; }
+    .muted-value { color: rgba(255,255,255,0.5); }
+    .total .line-label, .total .line-value { color: #fff; font-weight: 600; }
+
+    .consent {
+      display: flex; gap: 12px; align-items: flex-start;
+      padding: 18px 0 14px; border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .consent input[type="checkbox"] {
+      appearance: none; -webkit-appearance: none;
+      width: 24px; height: 24px;
+      border: 1.5px solid rgba(255,255,255,0.5);
+      border-radius: 6px; flex-shrink: 0; cursor: pointer; margin: 0;
+      display: grid; place-items: center; background: transparent;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .consent input[type="checkbox"]:checked { background: #526DF2; border-color: #526DF2; }
+    .consent input[type="checkbox"]:checked::after {
+      content: ""; width: 6px; height: 11px;
+      border: solid #fff; border-width: 0 2px 2px 0;
+      transform: rotate(45deg) translate(-1px, -1px);
+    }
+    .consent label { font-size: 14px; line-height: 1.5; color: #f5f5f7; cursor: pointer; }
+
+    .fine-print {
+      font-size: 12px; line-height: 1.55;
+      color: rgba(255,255,255,0.55); padding: 18px 0 22px;
+    }
+
+    .pay-wrap { padding: 16px 24px 24px; }
+    #payment-request-button { width: 100%; min-height: 56px; }
+
+    /* Diagnostic probe panel — shows Apple Pay detection details inline
+       so iOS users can read them without attaching to a Mac inspector. */
+    #diag {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.75);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 240px;
+      overflow: auto;
+    }
+
+    /* Shown when device cannot do Apple Pay */
+    #unsupported {
+      display: none;
+      padding: 16px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.06);
+      color: rgba(255,255,255,0.7);
+      font-size: 13px;
+      line-height: 1.45;
+      text-align: center;
+    }
+
+    /* Soft gate when checkbox is unchecked */
+    .gated { pointer-events: none; opacity: 0.4; }
+
+    #message {
+      margin-top: 12px; padding: 12px 14px; border-radius: 12px;
+      font-size: 13px; line-height: 1.4; display: none;
+    }
+    #message.success { background: rgba(48,209,88,0.15); color: #6cf38a; display: block; }
+    #message.error { background: rgba(255,69,58,0.15); color: #ff7d72; display: block; }
+    #message.info { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); display: block; }
+
+    @media (min-width: 640px) {
+      body { display: grid; place-items: center; padding: 24px; }
+      .shell {
+        width: 100%; max-width: 420px; background: #000;
+        border-radius: 32px; overflow: hidden;
+        box-shadow: 0 30px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <h1>Payment</h1>
+      <div class="product-row">
+        <span class="product-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M16 5 9 18l-2-4H4l5-9h7Zm-1 14h-3l1.5-3 1.5 3Z"/>
+          </svg>
+        </span>
+        <span class="product-label">Free 30-Day Trial</span>
+      </div>
+    </header>
+
+    <main class="body">
+      <div class="line">
+        <span class="line-label">Billed today</span>
+        <span class="line-value">$0</span>
+      </div>
+      <div class="line">
+        <span class="line-label">Annual subscription</span>
+        <span class="line-value">$79.99</span>
+      </div>
+      <div class="line">
+        <span class="line-label">Taxes</span>
+        <span class="line-value muted-value">--</span>
+      </div>
+      <div class="line total">
+        <span class="line-label" id="total-date-label">Total billed on Jul 9, 2026</span>
+        <span class="line-value">$79.99 + tax</span>
+      </div>
+
+      <div class="consent">
+        <input type="checkbox" id="agree" />
+        <label for="agree">
+          I agree to auto-renewal and the
+          <a href="#terms">Terms of Service</a> and
+          <a href="#privacy">Privacy Policy</a>.
+        </label>
+      </div>
+
+      <p class="fine-print">
+        After your free trial, you'll be charged $79.99 every year. You agree
+        that the subscription automatically renews unless you cancel at least
+        24 hours before your renewal date. You can cancel your trial or
+        subscription at any time from your account settings.
+      </p>
+    </main>
+
+    <div class="pay-wrap">
+      <div id="payment-request-button" class="gated"></div>
+      <div id="unsupported">
+        Apple Pay isn't available on this device. Open this page in Safari on
+        an iPhone or Mac signed in with a card in Wallet.
+      </div>
+      <div id="message" role="status" aria-live="polite"></div>
+      <pre id="diag" aria-label="Apple Pay diagnostic">loading…</pre>
+    </div>
+  </div>
+
+  <script>
+    // =================================================================
+    // CONFIG — fill these in once you have them
+    // =================================================================
+    // From Stripe Dashboard → Developers → API keys.
+    const STRIPE_PUBLISHABLE_KEY = "pk_test_51Sun8KJfOdgFDHJd0EqcDWpmcRgKzPTS3BcEdMOHclD6PZsoRGG987X7Dtn2xTQ7sQXnhnH5f19pZ0oZllp7mqiA00kTIaH7cg";
+
+    // POST endpoint that creates a Stripe Subscription with a 30-day trial
+    // and returns { clientSecret }. Spec is in the project README;
+    // simplest impl is a Firebase Callable / HTTP function.
+    // Example values:
+    //   - "/api/createSubscription"           (same-origin via Firebase Hosting rewrite)
+    //   - "https://us-central1-PROJECT.cloudfunctions.net/createSubscription"
+    const CREATE_SUBSCRIPTION_ENDPOINT = "/api/createSubscription";
+
+    // The recurring price id (e.g. "price_1Pabc..."). Create one in
+    // Stripe Dashboard → Products → $79.99/year. The backend reads this
+    // from env or constant — passing from the client is optional.
+    const STRIPE_PRICE_ID = "price_1TgPn9JfOdgFDHJdyEtUg8Vc";
+
+    const AMOUNT_FOR_DISPLAY = 7999; // $79.99 in cents — for the Apple Pay sheet's displayItems
+
+    // =================================================================
+
+    const agreeBox  = document.getElementById("agree");
+    const messageEl = document.getElementById("message");
+    const prHost    = document.getElementById("payment-request-button");
+    const unsupported = document.getElementById("unsupported");
+    const diagEl   = document.getElementById("diag");
+
+    // =================================================================
+    // DIAGNOSTIC PROBE — runs ASAP so we can see why Apple Pay is hidden.
+    // Writes to both console AND the visible #diag panel on the page so
+    // it's readable on iOS without attaching a Mac via Web Inspector.
+    // =================================================================
+    function writeDiag(lines) {
+      if (!diagEl) return;
+      diagEl.textContent = lines.join("\n");
+    }
+    (function probeApplePay() {
+      const lines = [];
+      const supported = !!window.ApplePaySession;
+      lines.push("isSafari (ApplePaySession present): " + supported);
+      let canMake = null;
+      let supportedVersions = null;
+      if (supported) {
+        try {
+          canMake = window.ApplePaySession.canMakePayments();
+        } catch (e) { canMake = "ERR: " + e.message; }
+        lines.push("ApplePaySession.canMakePayments(): " + canMake);
+        // Test a range of versions to know what the device supports.
+        try {
+          supportedVersions = [3, 4, 5, 6, 10, 14].filter((v) =>
+            window.ApplePaySession.supportsVersion(v),
+          );
+        } catch (e) { supportedVersions = "ERR: " + e.message; }
+        lines.push("supportsVersion (sampled): " + JSON.stringify(supportedVersions));
+      }
+      lines.push("location: " + location.protocol + "//" + location.host);
+      lines.push("userAgent: " + navigator.userAgent);
+      const summary = {
+        isSafari: supported,
+        canMakePayments: canMake,
+        supportedVersions,
+        protocol: location.protocol,
+        host: location.host,
+        userAgent: navigator.userAgent,
+      };
+      console.log("[ApplePay diag]", summary);
+      writeDiag(lines);
+      // canMakePaymentsWithActiveCard is async — append result when it
+      // resolves. Wrapped in try/catch because Safari throws synchronously
+      // on a bad merchant id rather than rejecting.
+      if (
+        supported &&
+        typeof window.ApplePaySession.canMakePaymentsWithActiveCard === "function"
+      ) {
+        try {
+          window.ApplePaySession
+            .canMakePaymentsWithActiveCard("merchant.com.stripe.applepay")
+            .then(
+              (hasCard) => {
+                console.log("[ApplePay diag] hasCard:", hasCard);
+                lines.push("canMakePaymentsWithActiveCard: " + hasCard);
+                writeDiag(lines);
+              },
+              (err) => {
+                console.log("[ApplePay diag] hasCard error:", err);
+                lines.push("canMakePaymentsWithActiveCard: ERR: " + (err?.message || err));
+                writeDiag(lines);
+              },
+            );
+        } catch (e) {
+          lines.push("canMakePaymentsWithActiveCard threw: " + e.message);
+          writeDiag(lines);
+        }
+      }
+    })();
+
+    function setMessage(kind, text) {
+      messageEl.className = kind || "";
+      messageEl.textContent = text || "";
+    }
+
+    function syncGate() {
+      if (agreeBox.checked) prHost.classList.remove("gated");
+      else prHost.classList.add("gated");
+    }
+    agreeBox.addEventListener("change", syncGate);
+
+    (function setRenewalDate() {
+      const d = new Date();
+      d.setDate(d.getDate() + 30);
+      const opts = { month: "short", day: "numeric", year: "numeric" };
+      document.getElementById("total-date-label").textContent =
+        "Total billed on " + d.toLocaleDateString("en-US", opts);
+    })();
+
+    // Demo guard — if the key isn't set, just show a hint, no Stripe calls.
+    if (!STRIPE_PUBLISHABLE_KEY.startsWith("pk_") || STRIPE_PUBLISHABLE_KEY.includes("REPLACE")) {
+      setMessage("info",
+        "Demo mode — UI only. Replace STRIPE_PUBLISHABLE_KEY, STRIPE_PRICE_ID, and CREATE_SUBSCRIPTION_ENDPOINT in this file to enable Apple Pay.");
+      prHost.classList.add("gated");
+    } else {
+      initApplePay();
+    }
+
+    async function initApplePay() {
+      const stripe = Stripe(STRIPE_PUBLISHABLE_KEY);
+      const paymentRequest = stripe.paymentRequest({
+        country: "US",
+        currency: "usd",
+        total: {
+          label: "Annual subscription (free for 30 days)",
+          amount: 0,                          // $0 today because of trial
+        },
+        displayItems: [
+          { label: "Annual subscription",     amount: AMOUNT_FOR_DISPLAY },
+          { label: "30-day free trial credit", amount: -AMOUNT_FOR_DISPLAY },
+        ],
+        requestPayerName: true,
+        requestPayerEmail: true,
+        // Don't request shipping for a digital subscription.
+      });
+
+      const prButton = stripe.elements().create("paymentRequestButton", {
+        paymentRequest,
+        style: {
+          paymentRequestButton: {
+            type: "subscribe",
+            theme: "light",           // black symbol on white pill
+            height: "56px",
+          },
+        },
+      });
+
+      // canMakePayment() resolves to { applePay: true, ... } when Safari
+      // has a card in Wallet. We REQUIRE applePay so this button never
+      // becomes a Google Pay / Link button.
+      const result = await paymentRequest.canMakePayment();
+      if (!result || !result.applePay) {
+        prHost.style.display = "none";
+        unsupported.style.display = "block";
+        return;
+      }
+      prButton.mount("#payment-request-button");
+      syncGate();
+
+      paymentRequest.on("paymentmethod", async (ev) => {
+        try {
+          // Gate consent — the Apple Pay sheet can be opened by tapping
+          // the button at the OS level even when "agree" is unchecked.
+          if (!agreeBox.checked) {
+            ev.complete("fail");
+            setMessage("error", "You must agree to auto-renewal before subscribing.");
+            return;
+          }
+
+          // Backend creates Subscription + returns the PaymentIntent's
+          // client_secret. See README for the function spec.
+          const res = await fetch(CREATE_SUBSCRIPTION_ENDPOINT, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              priceId: STRIPE_PRICE_ID,
+              email: ev.payerEmail || null,
+              name:  ev.payerName  || null,
+              paymentMethodId: ev.paymentMethod.id,
+            }),
+          });
+          if (!res.ok) {
+            const errText = await res.text().catch(() => res.statusText);
+            throw new Error("Backend rejected the request: " + errText);
+          }
+          const { clientSecret, status } = await res.json();
+
+          // For a $0 trial, Stripe sets the SetupIntent status to
+          // 'succeeded' immediately when the payment method is valid.
+          // If status is 'requires_action', we hand it to Stripe.js to
+          // complete the 3DS challenge.
+          if (status && status === "succeeded") {
+            ev.complete("success");
+            setMessage("success", "Subscription started — enjoy your trial.");
+            return;
+          }
+
+          if (!clientSecret) {
+            ev.complete("fail");
+            setMessage("error", "Backend response missing clientSecret.");
+            return;
+          }
+
+          // confirmCardSetup handles both PaymentIntent and SetupIntent
+          // depending on what the backend created.
+          const isSetup = clientSecret.startsWith("seti_");
+          const confirm = isSetup
+            ? stripe.confirmCardSetup(clientSecret, { payment_method: ev.paymentMethod.id }, { handleActions: false })
+            : stripe.confirmCardPayment(clientSecret, { payment_method: ev.paymentMethod.id }, { handleActions: false });
+          const { error: confirmError } = await confirm;
+          if (confirmError) {
+            ev.complete("fail");
+            setMessage("error", confirmError.message || "Payment failed.");
+            return;
+          }
+          ev.complete("success");
+          setMessage("success", "Subscription started — enjoy your trial.");
+        } catch (err) {
+          ev.complete("fail");
+          setMessage("error", err?.message || "Unable to start subscription.");
+        }
+      });
+    }
+  </script>
+</body>
+</html>

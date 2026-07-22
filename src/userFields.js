@@ -173,8 +173,8 @@ export const LEAST_FAMILIAR_AREA_ID_LABELS = Object.fromEntries(
 )
 
 /**
- * Audience filters for multi-select id fields: options are **only** the known
- * ids in `idLabelMap` (not every distinct joined string from user rows).
+ * Multi-select id fields: known ids → display label, used by the user
+ * Detail modal to render each as tags instead of a raw joined string.
  * Row data must include `idKey` arrays from `normalizeUserForExport`.
  *
  * @type {Record<string, { idKey: string, idLabelMap: Record<string, string> }>}
@@ -204,66 +204,6 @@ export const ONBOARDING_STRING_MULTI_FIELDS = {
   formats: 'formatsList',
   trainingTimePerDay: 'trainingTimePerDayList',
 }
-
-/**
- * Dropdown filters on Audience (one per segment field).
- * Multi-id fields use {@link AUDIENCE_MULTI_ID_FIELD_CONFIG}; others use distinct
- * string values from loaded users.
- */
-export const AUDIENCE_SEGMENT_SPECS = [
-  { key: 'skillLevel', allLabel: 'All skill levels', ariaLabel: 'Skill level' },
-  {
-    key: 'playFrequency',
-    allLabel: 'All play frequencies',
-    ariaLabel: 'Play frequency',
-  },
-  { key: 'formats', allLabel: 'All formats', ariaLabel: 'Formats' },
-  {
-    key: 'liveOrOnline',
-    allLabel: 'All live / online',
-    ariaLabel: 'Live or online',
-  },
-  {
-    key: 'preflopConfidence',
-    allLabel: 'All preflop confidence',
-    ariaLabel: 'Preflop confidence',
-  },
-  {
-    key: 'postflopApproach',
-    allLabel: 'All postflop approaches',
-    ariaLabel: 'Postflop approach',
-  },
-  {
-    key: 'struggleAreas',
-    allLabel: 'All struggle areas',
-    ariaLabel: 'Struggle areas',
-  },
-  {
-    key: 'goals',
-    allLabel: 'All goals',
-    ariaLabel: 'Goals',
-  },
-  {
-    key: 'trainingTimePerDay',
-    allLabel: 'All training times',
-    ariaLabel: 'Training time per day',
-  },
-  {
-    key: 'preflopComfort',
-    allLabel: 'All preflop comfort',
-    ariaLabel: 'Preflop comfort',
-  },
-  {
-    key: 'postflopDecide',
-    allLabel: 'All postflop decide',
-    ariaLabel: 'Postflop decide',
-  },
-  {
-    key: 'leastFamiliarAreas',
-    allLabel: 'All least familiar areas',
-    ariaLabel: 'Least familiar areas',
-  },
-]
 
 export const USER_EXPORT_FIELDS = [
   { key: 'email', label: 'email' },

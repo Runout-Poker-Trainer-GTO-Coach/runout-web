@@ -1,5 +1,5 @@
 import { TriangleAlert } from 'lucide-react'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { firebaseReady } from './firebase'
 import {
   isAdminSession,
@@ -10,16 +10,47 @@ import {
 import AdminLogin from './AdminLogin.jsx'
 import AdminLayout from './AdminLayout.jsx'
 import AudiencePage from './AudiencePage.jsx'
+import EditQuestionsPage from './EditQuestionsPage.jsx'
+import ExperimentsPage from './ExperimentsPage.jsx'
+import LessonReportsPage from './LessonReportsPage.jsx'
 import QuestionsPage from './QuestionsPage.jsx'
 import SettingsPage from './SettingsPage.jsx'
+import UserIdeasPage from './UserIdeasPage.jsx'
 
 export default function App() {
   const [authed, setAuthed] = useState(() => isAdminSession())
   const [adminAccess, setAdminAccess] = useState(() => readAdminRole())
   const [adminSection, setAdminSection] = useState(() => readAdminSection())
+  // Questions defaults to the rich card editor; the simple read-only table
+  // is a secondary view. Persisted across a refresh like the section itself.
+  const [questionsViewMode, setQuestionsViewMode] = useState(() => {
+    try {
+      return localStorage.getItem('webportal:questions-view') === 'table'
+        ? 'table'
+        : 'cards'
+    } catch {
+      return 'cards'
+    }
+  })
+  useEffect(() => {
+    try {
+      if (questionsViewMode === 'table') {
+        localStorage.setItem('webportal:questions-view', 'table')
+      } else {
+        localStorage.removeItem('webportal:questions-view')
+      }
+    } catch {
+      /* private mode / quota */
+    }
+  }, [questionsViewMode])
 
   const navigateAdmin = useCallback((section) => {
-    if (readAdminRole() === 'reports' && section !== 'questions') return
+    if (
+      readAdminRole() === 'reports' &&
+      section !== 'questions' &&
+      section !== 'lesson-reports'
+    )
+      return
     setAdminSection(section)
     persistAdminSection(section)
   }, [])
@@ -74,7 +105,11 @@ export default function App() {
   }
 
   const effectiveSection =
-    adminAccess === 'reports' ? 'questions' : adminSection
+    adminAccess === 'reports' &&
+    adminSection !== 'questions' &&
+    adminSection !== 'lesson-reports'
+      ? 'questions'
+      : adminSection
 
   return (
     <AdminLayout
@@ -84,7 +119,19 @@ export default function App() {
       onLogout={handleLogout}
     >
       {effectiveSection === 'questions' ? (
-        <QuestionsPage />
+        questionsViewMode === 'table' ? (
+          <QuestionsPage onEditClick={() => setQuestionsViewMode('cards')} />
+        ) : (
+          <EditQuestionsPage
+            onShowTableView={() => setQuestionsViewMode('table')}
+          />
+        )
+      ) : effectiveSection === 'lesson-reports' ? (
+        <LessonReportsPage />
+      ) : effectiveSection === 'user-ideas' ? (
+        <UserIdeasPage />
+      ) : effectiveSection === 'experiments' ? (
+        <ExperimentsPage />
       ) : effectiveSection === 'settings' ? (
         <SettingsPage />
       ) : (

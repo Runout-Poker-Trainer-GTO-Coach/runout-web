@@ -14,6 +14,15 @@ dist-ssr
 .env
 .env.*.local
 
+# Firebase/GCP service account keys — full-admin credentials, never commit.
+.secrets/
+serviceAccountKey.json
+*-firebase-adminsdk-*.json
+firebase-adminsdk*.json
+
+# Local Claude Code settings (machine-specific permissions/paths) — not shared.
+.claude/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -2,12 +2,13 @@ import {
   AlertCircle,
   ArrowDownWideNarrow,
   ArrowUpNarrowWide,
-  ChevronsUpDown,
   Check,
+  ChevronsUpDown,
   Filter,
   Flag,
   Inbox,
   Loader2,
+  Pencil,
   StickyNote,
   MessageCircleQuestion,
   Search,
@@ -15,32 +16,18 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { collection, doc, getDocs, updateDoc } from 'firebase/firestore'
+import { collection, getDocs } from 'firebase/firestore'
+import { db, firebaseReady, questionsCollectionName } from './firebase'
 import {
-  db,
-  firebaseReady,
-  questionsCollectionName,
-  usersCollectionName,
-} from './firebase'
-import {
-  aggregateQuestionAnswerStats,
-  answerPercentCorrect,
-  buildNumericQuestionIdMap,
-} from './questionAnswerStats.js'
-import {
+  answerPctToneClass,
+  answerStatsForRow,
   displayScalar,
+  isDeletedQuestionRow,
   questionDocToRow,
   questionPreviewText,
   questionRowMatchesSearch,
 } from './questionRow.js'
-
-/** @param {number | null} pct */
-function answerPctToneClass(pct) {
-  if (pct == null) return 'text-slate-500'
-  if (pct >= 70) return 'text-emerald-700'
-  if (pct >= 40) return 'text-amber-700'
-  return 'text-rose-700'
-}
+import ReportsModal from './ReportsModal.jsx'
 
 /**
  * Ascending doc id: pure digit ids sort numerically (1 … n); those before other ids;
@@ -66,62 +53,24 @@ function compareFirestoreDocIdAsc(a, b) {
 }
 
 /**
- * @param {{ firestoreDocId: string } & Record<string, unknown>} row
- * @param {Map<number, { correct: number, wrong: number }>} answerStatsByQuestionId
- * @param {Map<string, number>} numericQuestionIdMap
- * @returns {number | null} Percent correct, or null if not comparable
- */
-function answerPercentForSortRow(row, answerStatsByQuestionId, numericQuestionIdMap) {
-  const qid = numericQuestionIdMap.get(row.firestoreDocId)
-  if (qid == null) return null
-  const ansStats = answerStatsByQuestionId.get(qid)
-  if (!ansStats) return null
-  return answerPercentCorrect(ansStats.correct, ansStats.wrong)
-}
-
-/**
+ * @param {'none' | 'asc' | 'desc'} docIdSort
  * @param {'none' | 'count_desc' | 'count_asc'} reportSort
- * @param {'none' | 'pct_desc' | 'pct_asc'} answerSort
  * @param {Array<{ firestoreDocId: string } & Record<string, unknown>>} rows
- * @param {Map<number, { correct: number, wrong: number }>} answerStatsByQuestionId
- * @param {Map<string, number>} numericQuestionIdMap
  */
-function sortQuestionRows(
-  reportSort,
-  answerSort,
-  rows,
-  answerStatsByQuestionId,
-  numericQuestionIdMap,
-) {
+function sortQuestionRows(docIdSort, reportSort, rows) {
   const copy = [...rows]
   copy.sort((a, b) => {
+    // An explicit doc-id sort is the primary ordering when active.
+    if (docIdSort !== 'none') {
+      const d = compareFirestoreDocIdAsc(a, b)
+      return docIdSort === 'asc' ? d : -d
+    }
     if (reportSort !== 'none') {
       const ca = getReportsArray(a).length
       const cb = getReportsArray(b).length
       const rd =
         reportSort === 'count_desc' ? cb - ca : ca - cb
       if (rd !== 0) return rd
-    }
-    if (answerSort !== 'none') {
-      const pa = answerPercentForSortRow(
-        a,
-        answerStatsByQuestionId,
-        numericQuestionIdMap,
-      )
-      const pb = answerPercentForSortRow(
-        b,
-        answerStatsByQuestionId,
-        numericQuestionIdMap,
-      )
-      if (pa == null && pb == null) {
-        /* fall through to doc id */
-      } else {
-        if (pa == null) return 1
-        if (pb == null) return -1
-        const ad =
-          answerSort === 'pct_desc' ? pb - pa : pa - pb
-        if (ad !== 0) return ad
-      }
     }
     return compareFirestoreDocIdAsc(a, b)
   })
@@ -166,6 +115,7 @@ function reportCountsValue(row) {
   return Number.isFinite(n) ? n : 0
 }
 
+
 /**
  * List rows that have non-empty question text (see {@link questionPreviewText}) and/or non-empty `context`.
  * @param {Record<string, unknown>} row
@@ -175,57 +125,6 @@ function rowHasQuestionOrContext(row) {
   const hasCtx =
     typeof row.context === 'string' && row.context.trim() !== ''
   return hasQ || hasCtx
-}
-
-/** @param {unknown} v */
-function formatReportDate(v) {
-  if (v == null) return '—'
-  if (typeof v === 'string') return v
-  if (typeof v === 'object' && v !== null && 'toDate' in v) {
-    try {
-      return /** @type {{ toDate: () => Date }} */ (v).toDate().toISOString()
-    } catch {
-      return '—'
-    }
-  }
-  return String(v)
-}
-
-const LEGACY_REPORT_META = 'From Old Version'
-
-/**
- * @param {unknown} value
- * @returns {{ display: string, legacy: boolean }}
- */
-function reportMetaField(value) {
-  const s = String(value ?? '').trim()
-  if (s !== '') return { display: s, legacy: false }
-  return { display: LEGACY_REPORT_META, legacy: true }
-}
-
-/**
- * @param {Record<string, unknown>} r
- */
-function reportSummaryLines(r) {
-  const issue = r.issueType != null ? String(r.issueType) : ''
-  const details = r.details != null ? String(r.details) : ''
-  const uid = r.userId != null ? String(r.userId) : ''
-  const appVersion = r.appVersion != null ? String(r.appVersion) : ''
-  const deviceType = r.deviceType != null ? String(r.deviceType) : ''
-  const at = formatReportDate(r.submittedAt)
-  return { issue, details, uid, appVersion, deviceType, at }
-}
-
-/**
- * @param {unknown} rep
- * @param {string} notesTrimmed
- */
-function mergeReportAdminNotes(rep, notesTrimmed) {
-  const base =
-    rep && typeof rep === 'object' && !Array.isArray(rep) ? { ...rep } : {}
-  if (notesTrimmed) base.adminNotes = notesTrimmed
-  else delete base.adminNotes
-  return base
 }
 
 /**
@@ -254,7 +153,10 @@ function reportsAdminNotesForTable(reports) {
   return { lines, title }
 }
 
-export default function QuestionsPage() {
+/**
+ * @param {{ onEditClick?: () => void }} [props]
+ */
+export default function QuestionsPage({ onEditClick } = {}) {
   const [rows, setRows] = useState(
     /** @type {Array<{ firestoreDocId: string } & Record<string, unknown>>} */ (
       []
@@ -264,25 +166,13 @@ export default function QuestionsPage() {
   const [error, setError] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [reportFilter, setReportFilter] = useState('reported')
-  /** @type {{ firestoreDocId: string, questionPreview: string, reports: Record<string, unknown>[] } | null} */
-  const [reportModal, setReportModal] = useState(null)
-  const [resolvingKey, setResolvingKey] = useState(
-    /** @type {string | null} */ (null),
-  )
-  const [notesSavingKey, setNotesSavingKey] = useState(
-    /** @type {string | null} */ (null),
-  )
-  const [modalNoteDrafts, setModalNoteDrafts] = useState(
-    /** @type {Record<string, string>} */ ({}),
-  )
-  const [answerStatsByQuestionId, setAnswerStatsByQuestionId] = useState(
-    /** @type {Map<number, { correct: number, wrong: number }>} */ (new Map()),
-  )
-  const [answerStatsSort, setAnswerStatsSort] = useState(
-    /** @type {'none' | 'pct_desc' | 'pct_asc'} */ ('none'),
-  )
+  /** @type {({ firestoreDocId: string } & Record<string, unknown>) | null} */
+  const [viewingReportsRow, setViewingReportsRow] = useState(null)
   const [reportSort, setReportSort] = useState(
     /** @type {'none' | 'count_desc' | 'count_asc'} */ ('count_desc'),
+  )
+  const [docIdSort, setDocIdSort] = useState(
+    /** @type {'none' | 'asc' | 'desc'} */ ('none'),
   )
 
   const questionsWithBody = useMemo(
@@ -300,28 +190,17 @@ export default function QuestionsPage() {
     return list.filter((row) => questionRowMatchesSearch(row, q))
   }, [questionsWithBody, searchQuery, reportFilter])
 
-  const numericQuestionIdMap = useMemo(
-    () => buildNumericQuestionIdMap(rows),
-    [rows],
+  const displayRows = useMemo(
+    () => sortQuestionRows(docIdSort, reportSort, filteredRows),
+    [filteredRows, reportSort, docIdSort],
   )
 
-  const displayRows = useMemo(
-    () =>
-      sortQuestionRows(
-        reportSort,
-        answerStatsSort,
-        filteredRows,
-        answerStatsByQuestionId,
-        numericQuestionIdMap,
-      ),
-    [
-      filteredRows,
-      answerStatsByQuestionId,
-      answerStatsSort,
-      reportSort,
-      numericQuestionIdMap,
-    ],
-  )
+  const cycleDocIdSort = useCallback(() => {
+    setDocIdSort((s) => (s === 'none' ? 'asc' : s === 'asc' ? 'desc' : 'none'))
+    // Doc-id sort is the primary ordering — clear the other column sort so
+    // the header arrows stay truthful about what's actually sorting the list.
+    setReportSort('none')
+  }, [])
 
   const cycleReportSort = useCallback(() => {
     setReportSort((s) =>
@@ -331,178 +210,30 @@ export default function QuestionsPage() {
           ? 'none'
           : 'count_desc',
     )
-  }, [])
-
-  const cycleAnswerStatsSort = useCallback(() => {
-    setAnswerStatsSort((s) =>
-      s === 'none' ? 'pct_desc' : s === 'pct_desc' ? 'pct_asc' : 'none',
-    )
+    setDocIdSort('none')
   }, [])
 
   const hasSearch = searchQuery.trim() !== ''
   const hasActiveFilters = hasSearch || reportFilter === 'reported'
 
   const openReportsModal = useCallback((row) => {
-    const reports = getReportsArray(row)
-    if (reports.length === 0) return
-    const { firestoreDocId, ...data } = row
-    setReportModal({
-      firestoreDocId,
-      questionPreview: questionPreviewText(data) || '(No question text)',
-      reports: /** @type {Record<string, unknown>[]} */ ([...reports]),
-    })
+    if (getReportsArray(row).length === 0) return
+    setViewingReportsRow(row)
   }, [])
 
   const closeReportsModal = useCallback(() => {
-    setReportModal(null)
+    setViewingReportsRow(null)
   }, [])
 
-  useEffect(() => {
-    if (!reportModal) {
-      setModalNoteDrafts({})
-      return
-    }
-    const next = /** @type {Record<string, string>} */ ({})
-    reportModal.reports.forEach((rep, i) => {
-      const rk = `${reportModal.firestoreDocId}:${i}`
-      next[rk] =
-        typeof rep?.adminNotes === 'string' ? rep.adminNotes : ''
-    })
-    setModalNoteDrafts(next)
-  }, [reportModal])
-
-  const saveReportAdminNotes = useCallback(
-    async (firestoreDocId, reportIndex, notesText) => {
-      if (!db) return
-      // Use modal state as source of truth — table rows can disagree when `reports`
-      // is stored as a non-array shape that getReportsArray normalizes for display only.
-      if (!reportModal || reportModal.firestoreDocId !== firestoreDocId) return
-
-      const trimmed = notesText.trim()
-      const key = `${firestoreDocId}:${reportIndex}`
-      const current = reportModal.reports
-      if (reportIndex < 0 || reportIndex >= current.length) {
-        setError('Could not save notes (report is no longer in this view).')
-        return
-      }
-
-      const prev = current.map((r) =>
-        r && typeof r === 'object' && !Array.isArray(r) ? { ...r } : r,
-      )
-      const next = current.map((r, i) =>
-        i !== reportIndex ? r : mergeReportAdminNotes(r, trimmed),
-      )
-
-      setNotesSavingKey(key)
-      setError(null)
-
-      setRows((rowsPrev) =>
-        rowsPrev.map((r) =>
-          r.firestoreDocId === firestoreDocId ? { ...r, reports: next } : r,
-        ),
-      )
-      setReportModal((m) =>
-        !m || m.firestoreDocId !== firestoreDocId
-          ? m
-          : {
-              ...m,
-              reports: /** @type {Record<string, unknown>[]} */ (next),
-            },
-      )
-
-      try {
-        await updateDoc(doc(db, questionsCollectionName, firestoreDocId), {
-          reports: next,
-        })
-      } catch (e) {
-        setRows((rowsPrev) =>
-          rowsPrev.map((r) =>
-            r.firestoreDocId === firestoreDocId ? { ...r, reports: prev } : r,
-          ),
-        )
-        setReportModal((m) =>
-          m?.firestoreDocId === firestoreDocId
-            ? {
-                ...m,
-                reports: /** @type {Record<string, unknown>[]} */ (prev),
-              }
-            : m,
-        )
-        setError(e?.message || 'Failed to save admin notes')
-      } finally {
-        setNotesSavingKey(null)
-      }
-    },
-    [reportModal],
-  )
-
-  const resolveReport = useCallback(
-    async (firestoreDocId, reportIndex) => {
-      if (!db) return
-      if (!reportModal || reportModal.firestoreDocId !== firestoreDocId) return
-
-      const key = `${firestoreDocId}:${reportIndex}`
-      const current = reportModal.reports
-      if (reportIndex < 0 || reportIndex >= current.length) return
-
-      const prevReports = current.map((r) =>
-        r && typeof r === 'object' && !Array.isArray(r) ? { ...r } : r,
-      )
-      const nextReports = current.filter((_, i) => i !== reportIndex)
-
-      setResolvingKey(key)
-      setError(null)
-
-      setRows((rowsPrev) =>
-        rowsPrev.map((r) =>
-          r.firestoreDocId === firestoreDocId
-            ? { ...r, reports: nextReports }
-            : r,
-        ),
-      )
-      setReportModal((m) => {
-        if (!m || m.firestoreDocId !== firestoreDocId) return m
-        return nextReports.length === 0
-          ? null
-          : { ...m, reports: nextReports }
-      })
-
-      try {
-        await updateDoc(doc(db, questionsCollectionName, firestoreDocId), {
-          reports: nextReports,
-        })
-      } catch (e) {
-        setRows((rowsPrev) =>
-          rowsPrev.map((r) =>
-            r.firestoreDocId === firestoreDocId
-              ? { ...r, reports: prevReports }
-              : r,
-          ),
-        )
-        setReportModal((m) =>
-          m?.firestoreDocId === firestoreDocId
-            ? {
-                ...m,
-                reports: /** @type {Record<string, unknown>[]} */ (prevReports),
-              }
-            : m,
-        )
-        setError(e?.message || 'Failed to resolve report')
-      } finally {
-        setResolvingKey(null)
-      }
-    },
-    [reportModal],
-  )
-
-  useEffect(() => {
-    if (!reportModal) return
-    function onKey(e) {
-      if (e.key === 'Escape') closeReportsModal()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [reportModal, closeReportsModal])
+  // Keeps the table's row data (badge counts, filters) in sync after a
+  // resolve/notes-save inside the shared modal.
+  const handleReportsChange = useCallback((firestoreDocId, nextReports) => {
+    setRows((prev) =>
+      prev.map((r) =>
+        r.firestoreDocId === firestoreDocId ? { ...r, reports: nextReports } : r,
+      ),
+    )
+  }, [])
 
   useEffect(() => {
     if (!firebaseReady || !db) {
@@ -516,25 +247,16 @@ export default function QuestionsPage() {
 
     ;(async () => {
       try {
-        const [qSnap, userRows] = await Promise.all([
-          getDocs(collection(db, questionsCollectionName)),
-          getDocs(collection(db, usersCollectionName))
-            .then((s) =>
-              s.docs.map((d) =>
-                /** @type {Record<string, unknown>} */ (d.data()),
-              ),
-            )
-            .catch(() => /** @type {Record<string, unknown>[]} */ ([])),
-        ])
+        const qSnap = await getDocs(collection(db, questionsCollectionName))
         if (cancelled) return
-        const list = qSnap.docs.map((d) => questionDocToRow(d.id, d.data()))
+        const list = qSnap.docs
+          .map((d) => questionDocToRow(d.id, d.data()))
+          .filter((r) => !isDeletedQuestionRow(r))
         setRows(list)
-        setAnswerStatsByQuestionId(aggregateQuestionAnswerStats(userRows))
       } catch (e) {
         if (!cancelled) {
           setError(e?.message || 'Failed to load questions')
           setRows([])
-          setAnswerStatsByQuestionId(new Map())
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -575,17 +297,6 @@ export default function QuestionsPage() {
                 <span>Collection: {questionsCollectionName}</span>
               ) : null}
             </p>
-            <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-slate-500">
-              Answer stats sum every graded attempt from{' '}
-              <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-700">
-                {usersCollectionName}
-              </code>{' '}
-              session reviews, keyed by each question’s numeric{' '}
-              <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-700">
-                id
-              </code>
-              .
-            </p>
           </div>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-stretch">
@@ -623,6 +334,20 @@ export default function QuestionsPage() {
               className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-violet-400 focus:ring-4 focus:ring-violet-500/15"
             />
           </div>
+          {onEditClick ? (
+            <button
+              type="button"
+              onClick={onEditClick}
+              className="inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-900 shadow-sm transition hover:border-violet-300 hover:bg-violet-100/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2"
+            >
+              <Pencil
+                className="size-4 shrink-0"
+                strokeWidth={2.25}
+                aria-hidden
+              />
+              Edit Questions
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -697,7 +422,46 @@ export default function QuestionsPage() {
                     scope="col"
                     className="whitespace-nowrap px-3 py-3.5 text-xs font-semibold uppercase tracking-wide text-slate-600 lg:px-4"
                   >
-                    Doc ID
+                    <button
+                      type="button"
+                      onClick={cycleDocIdSort}
+                      className="group inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-lg text-left transition hover:text-violet-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2"
+                      title={
+                        docIdSort === 'none'
+                          ? 'Sort by doc ID (ascending)'
+                          : docIdSort === 'asc'
+                            ? 'Sorted: doc ID ascending — click for descending'
+                            : 'Sorted: doc ID descending — click to clear sort'
+                      }
+                      aria-sort={
+                        docIdSort === 'asc'
+                          ? 'ascending'
+                          : docIdSort === 'desc'
+                            ? 'descending'
+                            : 'none'
+                      }
+                    >
+                      <span>Doc ID</span>
+                      {docIdSort === 'asc' ? (
+                        <ArrowUpNarrowWide
+                          className="size-3.5 shrink-0 text-violet-600"
+                          strokeWidth={2.25}
+                          aria-hidden
+                        />
+                      ) : docIdSort === 'desc' ? (
+                        <ArrowDownWideNarrow
+                          className="size-3.5 shrink-0 text-violet-600"
+                          strokeWidth={2.25}
+                          aria-hidden
+                        />
+                      ) : (
+                        <ChevronsUpDown
+                          className="size-3.5 shrink-0 text-slate-400/70"
+                          strokeWidth={2}
+                          aria-hidden
+                        />
+                      )}
+                    </button>
                   </th>
                   <th
                     scope="col"
@@ -719,51 +483,6 @@ export default function QuestionsPage() {
                   </th>
                   <th
                     scope="col"
-                    className="min-w-[140px] px-3 py-3.5 text-xs font-semibold uppercase tracking-wide text-slate-600 lg:px-4"
-                  >
-                    <button
-                      type="button"
-                      onClick={cycleAnswerStatsSort}
-                      className="group inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-lg text-left transition hover:text-violet-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2"
-                      title={
-                        answerStatsSort === 'none'
-                          ? 'Sort by % correct (highest first)'
-                          : answerStatsSort === 'pct_desc'
-                            ? 'Sorted: highest % first — click for lowest % first'
-                            : 'Sorted: lowest % first — click to clear sort'
-                      }
-                      aria-sort={
-                        answerStatsSort === 'pct_desc'
-                          ? 'descending'
-                          : answerStatsSort === 'pct_asc'
-                            ? 'ascending'
-                            : 'none'
-                      }
-                    >
-                      <span>Answer stats</span>
-                      {answerStatsSort === 'pct_desc' ? (
-                        <ArrowDownWideNarrow
-                          className="size-3.5 shrink-0 text-violet-600"
-                          strokeWidth={2.25}
-                          aria-hidden
-                        />
-                      ) : answerStatsSort === 'pct_asc' ? (
-                        <ArrowUpNarrowWide
-                          className="size-3.5 shrink-0 text-violet-600"
-                          strokeWidth={2.25}
-                          aria-hidden
-                        />
-                      ) : (
-                        <ChevronsUpDown
-                          className="size-3.5 shrink-0 text-slate-400/70"
-                          strokeWidth={2}
-                          aria-hidden
-                        />
-                      )}
-                    </button>
-                  </th>
-                  <th
-                    scope="col"
                     className="min-w-[160px] max-w-[260px] px-3 py-3.5 text-xs font-semibold uppercase tracking-wide text-slate-600 lg:px-4"
                   >
                     <span className="inline-flex items-center gap-1.5">
@@ -780,6 +499,12 @@ export default function QuestionsPage() {
                     className="whitespace-nowrap px-3 py-3.5 text-center text-xs font-semibold uppercase tracking-wide text-slate-600 lg:px-4"
                   >
                     Report counts
+                  </th>
+                  <th
+                    scope="col"
+                    className="whitespace-nowrap px-3 py-3.5 text-center text-xs font-semibold uppercase tracking-wide text-slate-600 lg:px-4"
+                  >
+                    Answer stats
                   </th>
                   <th
                     scope="col"
@@ -834,18 +559,14 @@ export default function QuestionsPage() {
                   const questionText = questionPreviewText(data)
                   const reports = getReportsArray(row)
                   const reportCount = reports.length
-                  const qid = numericQuestionIdMap.get(row.firestoreDocId)
-                  const ansStats =
-                    qid != null ? answerStatsByQuestionId.get(qid) : undefined
-                  const ansPct = ansStats
-                    ? answerPercentCorrect(ansStats.correct, ansStats.wrong)
-                    : null
-                  const ansTotal =
-                    ansStats != null
-                      ? ansStats.correct + ansStats.wrong
-                      : 0
                   const { lines: noteLines, title: notesTitle } =
                     reportsAdminNotesForTable(reports)
+                  const {
+                    correct: ansCorrect,
+                    wrong: ansWrong,
+                    pct: ansPct,
+                  } = answerStatsForRow(row)
+                  const ansTotal = ansCorrect + ansWrong
                   return (
                     <tr
                       key={firestoreDocId}
@@ -883,53 +604,6 @@ export default function QuestionsPage() {
                           {displayScalar(row.question_type)}
                         </span>
                       </td>
-                      <td className="px-3 py-3 align-top lg:px-4">
-                        {qid == null ? (
-                          <span className="text-xs text-slate-400">—</span>
-                        ) : ansStats && ansTotal > 0 ? (
-                          <div className="space-y-1">
-                            <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs tabular-nums">
-                              <span
-                                className="inline-flex items-center gap-0.5 text-emerald-700"
-                                title="Correct"
-                              >
-                                <Check
-                                  className="size-3.5 shrink-0"
-                                  strokeWidth={2.5}
-                                  aria-hidden
-                                />
-                                {ansStats.correct}
-                              </span>
-                              <span className="text-slate-300" aria-hidden>
-                                ·
-                              </span>
-                              <span
-                                className="inline-flex items-center gap-0.5 text-rose-700"
-                                title="Incorrect"
-                              >
-                                <X
-                                  className="size-3.5 shrink-0"
-                                  strokeWidth={2.5}
-                                  aria-hidden
-                                />
-                                {ansStats.wrong}
-                              </span>
-                            </p>
-                            <p
-                              className={`text-xs font-semibold tabular-nums ${answerPctToneClass(ansPct)}`}
-                            >
-                              {ansPct}% correct
-                            </p>
-                          </div>
-                        ) : (
-                          <span
-                            className="text-xs text-slate-400"
-                            title="No graded attempts in user session data yet"
-                          >
-                            No data
-                          </span>
-                        )}
-                      </td>
                       <td className="min-w-[160px] max-w-[260px] px-3 py-3 align-top lg:px-4">
                         {noteLines.length === 0 ? (
                           <span className="text-slate-400">—</span>
@@ -958,6 +632,31 @@ export default function QuestionsPage() {
                         {reportCountsValue(row)}
                       </td>
                       <td className="px-3 py-3 text-center lg:px-4">
+                        {ansTotal > 0 ? (
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums ring-1 ${answerPctToneClass(ansPct)}`}
+                            title={`Graded attempts: ${ansCorrect.toLocaleString()} correct, ${ansWrong.toLocaleString()} wrong (${ansPct}% correct)`}
+                          >
+                            <Check
+                              className="size-3 shrink-0"
+                              strokeWidth={2.5}
+                              aria-hidden
+                            />
+                            {ansCorrect.toLocaleString()}
+                            <X
+                              className="size-3 shrink-0 opacity-70"
+                              strokeWidth={2.5}
+                              aria-hidden
+                            />
+                            {ansWrong.toLocaleString()}
+                            <span className="opacity-60">·</span>
+                            <span>{ansPct}%</span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-center lg:px-4">
                         <button
                           type="button"
                           disabled={reportCount === 0}
@@ -984,198 +683,11 @@ export default function QuestionsPage() {
         )}
       </div>
 
-      {reportModal ? (
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-0 backdrop-blur-sm sm:items-center sm:p-4"
-          role="presentation"
-          onClick={closeReportsModal}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="reports-modal-title"
-            className="flex max-h-[min(90vh,720px)] w-full max-w-lg flex-col rounded-t-2xl border border-slate-200 bg-white shadow-2xl sm:rounded-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
-              <div className="min-w-0">
-                <h2
-                  id="reports-modal-title"
-                  className="text-lg font-semibold text-slate-900"
-                >
-                  Reports
-                </h2>
-                <p className="mt-1 font-mono text-xs text-slate-500">
-                  {reportModal.firestoreDocId}
-                </p>
-                <p className="mt-2 line-clamp-3 text-sm text-slate-600">
-                  {reportModal.questionPreview}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={closeReportsModal}
-                className="shrink-0 cursor-pointer rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
-                aria-label="Close"
-              >
-                <X className="size-5" strokeWidth={2} />
-              </button>
-            </div>
-            <ul className="flex-1 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
-              {reportModal.reports.map((rep, index) => {
-                const { issue, details, uid, appVersion, deviceType, at } =
-                  reportSummaryLines(rep)
-                const appMeta = reportMetaField(appVersion)
-                const deviceMeta = reportMetaField(deviceType)
-                const rk = `${reportModal.firestoreDocId}:${index}`
-                const busy = resolvingKey === rk
-                return (
-                  <li
-                    key={rk}
-                    className="mb-3 list-none rounded-xl border border-slate-200 bg-slate-50/80 p-4 last:mb-0"
-                  >
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="min-w-0 flex-1 space-y-1.5 text-sm">
-                        {issue ? (
-                          <p>
-                            <span className="font-semibold text-slate-700">
-                              Type:{' '}
-                            </span>
-                            <span className="rounded-md bg-white px-1.5 py-0.5 font-mono text-xs text-violet-800 ring-1 ring-violet-100">
-                              {issue}
-                            </span>
-                          </p>
-                        ) : null}
-                        {details ? (
-                          <p className="break-words text-slate-700">
-                            <span className="font-semibold text-slate-800">
-                              Details:{' '}
-                            </span>
-                            {details}
-                          </p>
-                        ) : null}
-                        {uid ? (
-                          <p className="font-mono text-xs text-slate-500">
-                            User: {uid}
-                          </p>
-                        ) : null}
-                        <p className="font-mono text-xs text-slate-500">
-                          App version:{' '}
-                          <span
-                            className={
-                              appMeta.legacy ? 'italic text-slate-400' : undefined
-                            }
-                          >
-                            {appMeta.display}
-                          </span>
-                        </p>
-                        <p className="font-mono text-xs text-slate-500">
-                          Device type:{' '}
-                          <span
-                            className={
-                              deviceMeta.legacy
-                                ? 'italic text-slate-400'
-                                : undefined
-                            }
-                          >
-                            {deviceMeta.display}
-                          </span>
-                        </p>
-                        <p className="text-xs text-slate-500">Submitted: {at}</p>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={resolvingKey !== null || notesSavingKey !== null}
-                        onClick={() =>
-                          resolveReport(reportModal.firestoreDocId, index)
-                        }
-                        className="shrink-0 cursor-pointer rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900 transition hover:bg-emerald-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {busy ? (
-                          <span className="inline-flex items-center gap-2">
-                            <Loader2
-                              className="size-3.5 animate-spin"
-                              strokeWidth={2}
-                            />
-                            Resolving…
-                          </span>
-                        ) : (
-                          'Resolve'
-                        )}
-                      </button>
-                    </div>
-                    <div className="mt-3 border-t border-slate-200/90 pt-3">
-                      <label
-                        htmlFor={`report-admin-notes-${rk}`}
-                        className="flex items-center gap-1.5 text-xs font-semibold text-slate-700"
-                      >
-                        <StickyNote
-                          className="size-3.5 shrink-0 text-violet-600"
-                          strokeWidth={2}
-                          aria-hidden
-                        />
-                        Admin notes
-                      </label>
-                      <textarea
-                        id={`report-admin-notes-${rk}`}
-                        rows={3}
-                        value={modalNoteDrafts[rk] ?? ''}
-                        onChange={(e) =>
-                          setModalNoteDrafts((prev) => ({
-                            ...prev,
-                            [rk]: e.target.value,
-                          }))
-                        }
-                        disabled={
-                          resolvingKey !== null || notesSavingKey !== null
-                        }
-                        placeholder="Internal notes (saved on this report only)…"
-                        className="mt-1.5 w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none placeholder:text-slate-400 focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                      />
-                      <div className="mt-2 flex justify-end">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            saveReportAdminNotes(
-                              reportModal.firestoreDocId,
-                              index,
-                              modalNoteDrafts[rk] ?? '',
-                            )
-                          }
-                          disabled={
-                            resolvingKey !== null || notesSavingKey !== null
-                          }
-                          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-900 transition hover:bg-violet-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {notesSavingKey === rk ? (
-                            <span className="inline-flex items-center gap-2">
-                              <Loader2
-                                className="size-3.5 animate-spin"
-                                strokeWidth={2}
-                                aria-hidden
-                              />
-                              Saving…
-                            </span>
-                          ) : (
-                            <>
-                              <StickyNote
-                                className="size-3.5 shrink-0"
-                                strokeWidth={2}
-                                aria-hidden
-                              />
-                              Save notes
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  </li>
-                )
-              })}
-            </ul>
-          </div>
-        </div>
-      ) : null}
+      <ReportsModal
+        row={viewingReportsRow}
+        onClose={closeReportsModal}
+        onReportsChange={handleReportsChange}
+      />
     </div>
   )
 }
