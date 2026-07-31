@@ -1,9 +1,13 @@
 import {
   AlertCircle,
   BadgePercent,
+  Bot,
+  Cpu,
+  DollarSign,
   Globe,
   Infinity as InfinityIcon,
   Loader2,
+  Power,
   Save,
   Settings,
   Smartphone,
@@ -27,8 +31,10 @@ import {
   usersCollectionName,
 } from './firebase'
 import {
+  AI_CHAT_BOT_MODELS,
   APP_SETTINGS_DEFAULTS,
   APP_SETTINGS_FIELDS,
+  estimateChatBotPromptCostUsd,
 } from './settingsConstants.js'
 import PercentageSlider from './PercentageSlider.jsx'
 
@@ -46,6 +52,26 @@ function clampPercentage(v) {
   return Math.max(0, Math.min(100, Math.round(n)))
 }
 
+/**
+ * Non-negative USD amount, rounded to the cent. Missing/invalid values fall
+ * back to the configured default (not 0) — a fresh Firestore document has no
+ * value here yet, and 0 would silently mean "no AI spend allowed all day."
+ */
+function clampUsd(v) {
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isFinite(n) || n < 0) {
+    return APP_SETTINGS_DEFAULTS.aiChatBotMaxCostPerDayUsd
+  }
+  return Math.round(n * 100) / 100
+}
+
+/** Falls back to the default model if the stored value isn't a known one. */
+function clampChatBotModel(v) {
+  return AI_CHAT_BOT_MODELS.some((m) => m.id === v)
+    ? v
+    : APP_SETTINGS_DEFAULTS.aiChatBotModel
+}
+
 function parseSettings(data) {
   const d =
     data && typeof data === 'object'
@@ -59,6 +85,11 @@ function parseSettings(data) {
     unlimitedSessions: t(APP_SETTINGS_FIELDS.unlimitedSessions),
     app2WebPercentage: clampPercentage(
       d[APP_SETTINGS_FIELDS.app2WebPercentage],
+    ),
+    aiChatBotEnabled: t(APP_SETTINGS_FIELDS.aiChatBotEnabled),
+    aiChatBotModel: clampChatBotModel(d[APP_SETTINGS_FIELDS.aiChatBotModel]),
+    aiChatBotMaxCostPerDayUsd: clampUsd(
+      d[APP_SETTINGS_FIELDS.aiChatBotMaxCostPerDayUsd],
     ),
   }
 }
@@ -191,6 +222,30 @@ export default function SettingsPage() {
     [patch],
   )
 
+  const setAiChatBotModel = useCallback(
+    (/** @type {string} */ raw) => {
+      patch({ aiChatBotModel: clampChatBotModel(raw) })
+    },
+    [patch],
+  )
+
+  const setAiChatBotMaxCostPerDayUsd = useCallback(
+    (/** @type {string | number} */ raw) => {
+      patch({ aiChatBotMaxCostPerDayUsd: clampUsd(raw) })
+    },
+    [patch],
+  )
+
+  const estimatedPromptCost = useMemo(() => {
+    const model = AI_CHAT_BOT_MODELS.find(
+      (m) => m.id === values.aiChatBotModel,
+    )
+    return {
+      label: model?.label ?? values.aiChatBotModel,
+      usd: estimateChatBotPromptCostUsd(values.aiChatBotModel, 700) ?? 0,
+    }
+  }, [values.aiChatBotModel])
+
   useEffect(() => {
     if (!firebaseReady || !db) {
       setLoading(false)
@@ -276,7 +331,8 @@ export default function SettingsPage() {
               </span>
             </div>
             <p className="mt-1 max-w-xl text-sm text-slate-600">
-              App-wide flags: discount screens and unlimited training sessions.
+              App-wide flags: discount screens, unlimited training sessions,
+              App2Web rollout, and the AI chat bot.
             </p>
           </div>
         </div>
@@ -413,6 +469,135 @@ export default function SettingsPage() {
               />
             </SettingsCard>
 
+            <SettingsCard
+              eyebrow="AI"
+              title="AI chat bot"
+              description="Which Claude model powers the in-app chat bot, whether it's enabled, and a daily spend cap."
+              icon={
+                <Bot
+                  className="size-5 text-emerald-700"
+                  strokeWidth={2}
+                  aria-hidden
+                />
+              }
+            >
+              <SettingToggle
+                id="set-ai-chat-bot-enabled"
+                title="Enable AI chat bot"
+                description="When off, the chat bot is hidden from users entirely."
+                checked={values.aiChatBotEnabled}
+                onChange={(c) => patch({ aiChatBotEnabled: c })}
+                disabled={saving}
+                icon={
+                  <Power
+                    className="size-5 text-slate-700"
+                    strokeWidth={2}
+                    aria-hidden
+                  />
+                }
+              />
+
+              <div className="flex flex-col gap-3 rounded-xl border border-slate-100/90 bg-white/80 p-4 shadow-sm ring-1 ring-slate-900/[0.03] sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-50 to-white shadow-sm ring-1 ring-slate-200/80">
+                    <Cpu
+                      className="size-5 text-slate-700"
+                      strokeWidth={2}
+                      aria-hidden
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <label
+                      htmlFor="set-ai-chat-bot-model"
+                      className="text-sm font-semibold text-slate-900"
+                    >
+                      Model
+                    </label>
+                    <p className="text-xs leading-snug text-slate-500">
+                      Which Claude model powers the chat bot.
+                    </p>
+                  </div>
+                </div>
+                <select
+                  id="set-ai-chat-bot-model"
+                  value={values.aiChatBotModel}
+                  onChange={(e) => setAiChatBotModel(e.target.value)}
+                  disabled={saving}
+                  className="w-full shrink-0 cursor-pointer rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 shadow-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/15 disabled:opacity-50 sm:w-auto"
+                >
+                  {AI_CHAT_BOT_MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex flex-col gap-3 rounded-xl border border-slate-100/90 bg-white/80 p-4 shadow-sm ring-1 ring-slate-900/[0.03] sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-50 to-white shadow-sm ring-1 ring-slate-200/80">
+                    <DollarSign
+                      className="size-5 text-slate-700"
+                      strokeWidth={2}
+                      aria-hidden
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <label
+                      htmlFor="set-ai-chat-bot-max-cost"
+                      className="text-sm font-semibold text-slate-900"
+                    >
+                      Max cost per day
+                    </label>
+                    <p className="text-xs leading-snug text-slate-500">
+                      Hard cap on total AI spend per day, across all users.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <span
+                    className="text-sm font-semibold text-slate-500"
+                    aria-hidden
+                  >
+                    $
+                  </span>
+                  <input
+                    id="set-ai-chat-bot-max-cost"
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    inputMode="decimal"
+                    value={values.aiChatBotMaxCostPerDayUsd}
+                    onChange={(e) =>
+                      setAiChatBotMaxCostPerDayUsd(e.target.value)
+                    }
+                    disabled={saving}
+                    aria-label="Max cost per day in US dollars"
+                    className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-right text-sm font-semibold tabular-nums text-slate-900 shadow-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-500/15 disabled:opacity-50"
+                  />
+                  <span
+                    className="text-sm font-semibold text-slate-500"
+                    aria-hidden
+                  >
+                    / day
+                  </span>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-dashed border-slate-200/90 bg-slate-50/70 p-4">
+                <p className="text-xs font-semibold text-slate-600">
+                  Estimated cost per prompt — {estimatedPromptCost.label}
+                </p>
+                <p className="mt-1 text-lg font-bold tabular-nums text-slate-900">
+                  ${estimatedPromptCost.usd.toFixed(4)}
+                </p>
+                <p className="mt-1 text-[11px] leading-snug text-slate-500">
+                  Based on a 700-token prompt at this model's input price.
+                  The reply is billed separately, at a higher per-token rate.
+                </p>
+              </div>
+            </SettingsCard>
+
             <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-2xl border border-slate-200/90 bg-white/95 px-4 py-4 shadow-[0_8px_40px_-12px_rgba(15,23,42,0.2)] backdrop-blur-md sm:flex-row sm:items-center sm:justify-between sm:px-5">
               <p className="text-sm font-medium text-slate-800">
                 {dirty ? 'Unsaved changes' : 'All changes saved'}
@@ -451,6 +636,9 @@ export default function SettingsPage() {
   "showDiscountScreenAndroid": false,
   "unlimitedSessions": false,
   "app2WebPercentage": 0,
+  "aiChatBotEnabled": false,
+  "aiChatBotModel": "claude-sonnet-5",
+  "aiChatBotMaxCostPerDayUsd": 10,
   "updatedAt": "<Firestore Timestamp>"
 }`}
               </pre>
