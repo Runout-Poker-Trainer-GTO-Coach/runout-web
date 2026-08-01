@@ -27,6 +27,25 @@ export const APP_SETTINGS_DEFAULTS = {
   aiChatBotMaxCostPerDayUsd: 10,
 }
 
+/**
+ * Read-only AI chat bot usage fields on the same document — written by the
+ * chat bot backend as it runs, not by this admin page. Deliberately kept out
+ * of APP_SETTINGS_FIELDS/APP_SETTINGS_DEFAULTS: those drive the Settings page
+ * save button, and writing these back would clobber live spend tracking with
+ * a stale value from whenever the page happened to load.
+ */
+export const AI_CHAT_BOT_STATUS_FIELDS = {
+  aiChatBotTodayCostUsd: 'aiChatBotTodayCostUsd',
+  aiChatBotCostDate: 'aiChatBotCostDate',
+  aiChatBotDailyCapReached: 'aiChatBotDailyCapReached',
+}
+
+export const AI_CHAT_BOT_STATUS_DEFAULTS = {
+  aiChatBotTodayCostUsd: 0,
+  aiChatBotCostDate: /** @type {string | null} */ (null),
+  aiChatBotDailyCapReached: false,
+}
+
 /** Selectable Claude models for the AI chat bot feature. */
 export const AI_CHAT_BOT_MODELS = [
   { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 — fastest, cheapest' },

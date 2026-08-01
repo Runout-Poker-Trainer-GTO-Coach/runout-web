@@ -1,9 +1,11 @@
 import {
   AlertCircle,
+  AlertTriangle,
   BadgePercent,
   Bot,
   Cpu,
   DollarSign,
+  Gauge,
   Globe,
   Infinity as InfinityIcon,
   Loader2,
@@ -32,6 +34,8 @@ import {
 } from './firebase'
 import {
   AI_CHAT_BOT_MODELS,
+  AI_CHAT_BOT_STATUS_DEFAULTS,
+  AI_CHAT_BOT_STATUS_FIELDS,
   APP_SETTINGS_DEFAULTS,
   APP_SETTINGS_FIELDS,
   estimateChatBotPromptCostUsd,
@@ -91,6 +95,33 @@ function parseSettings(data) {
     aiChatBotMaxCostPerDayUsd: clampUsd(
       d[APP_SETTINGS_FIELDS.aiChatBotMaxCostPerDayUsd],
     ),
+  }
+}
+
+/**
+ * Parses the read-only AI chat bot usage fields — written by the chat bot
+ * backend, never by this page. Kept separate from `parseSettings`/`values`
+ * so a normal settings save can never overwrite live spend tracking.
+ */
+function parseChatBotStatus(data) {
+  const d =
+    data && typeof data === 'object'
+      ? /** @type {Record<string, unknown>} */ (data)
+      : {}
+  const rawCost = d[AI_CHAT_BOT_STATUS_FIELDS.aiChatBotTodayCostUsd]
+  const n = typeof rawCost === 'number' ? rawCost : Number(rawCost)
+  const rawDate = d[AI_CHAT_BOT_STATUS_FIELDS.aiChatBotCostDate]
+  return {
+    aiChatBotTodayCostUsd:
+      Number.isFinite(n) && n >= 0
+        ? n
+        : AI_CHAT_BOT_STATUS_DEFAULTS.aiChatBotTodayCostUsd,
+    aiChatBotCostDate:
+      typeof rawDate === 'string' && rawDate
+        ? rawDate
+        : AI_CHAT_BOT_STATUS_DEFAULTS.aiChatBotCostDate,
+    aiChatBotDailyCapReached:
+      d[AI_CHAT_BOT_STATUS_FIELDS.aiChatBotDailyCapReached] === true,
   }
 }
 
@@ -202,6 +233,9 @@ export default function SettingsPage() {
 
   const [values, setValues] = useState(() => ({ ...APP_SETTINGS_DEFAULTS }))
   const [saved, setSaved] = useState(() => ({ ...APP_SETTINGS_DEFAULTS }))
+  const [chatBotStatus, setChatBotStatus] = useState(() => ({
+    ...AI_CHAT_BOT_STATUS_DEFAULTS,
+  }))
 
   const dirty = useMemo(
     () => JSON.stringify(values) !== JSON.stringify(saved),
@@ -246,6 +280,13 @@ export default function SettingsPage() {
     }
   }, [values.aiChatBotModel])
 
+  const chatBotSpendPct = useMemo(() => {
+    const cap = values.aiChatBotMaxCostPerDayUsd
+    const spent = chatBotStatus.aiChatBotTodayCostUsd
+    if (cap <= 0) return spent > 0 ? 100 : 0
+    return Math.max(0, Math.min(100, (spent / cap) * 100))
+  }, [chatBotStatus.aiChatBotTodayCostUsd, values.aiChatBotMaxCostPerDayUsd])
+
   useEffect(() => {
     if (!firebaseReady || !db) {
       setLoading(false)
@@ -264,6 +305,7 @@ export default function SettingsPage() {
         const next = parseSettings(snap.data())
         setValues(next)
         setSaved(next)
+        setChatBotStatus(parseChatBotStatus(snap.data()))
       } catch (e) {
         if (!cancelled) {
           setError(e?.message || 'Failed to load settings')
@@ -309,6 +351,8 @@ export default function SettingsPage() {
       setSaving(false)
     }
   }, [values, dirty, saved.unlimitedSessions])
+
+  const todayIso = new Date().toISOString().slice(0, 10)
 
   return (
     <div className="min-h-[calc(100vh-3rem)] bg-gradient-to-b from-emerald-50/35 via-slate-50/90 to-slate-100/80 px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
@@ -584,6 +628,86 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+              <div className="rounded-xl border border-slate-100/90 bg-white/80 p-4 shadow-sm ring-1 ring-slate-900/[0.03]">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-50 to-white shadow-sm ring-1 ring-slate-200/80">
+                      <Gauge
+                        className="size-5 text-slate-700"
+                        strokeWidth={2}
+                        aria-hidden
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-900">
+                        Today's spend
+                      </p>
+                      <p className="text-xs leading-snug text-slate-500">
+                        Live usage tracked by the chat bot — read-only here.
+                      </p>
+                    </div>
+                  </div>
+                  <span
+                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
+                      chatBotStatus.aiChatBotDailyCapReached
+                        ? 'bg-rose-50 text-rose-800 ring-rose-200'
+                        : 'bg-emerald-50 text-emerald-800 ring-emerald-200/80'
+                    }`}
+                  >
+                    {chatBotStatus.aiChatBotDailyCapReached ? (
+                      <>
+                        <AlertTriangle
+                          className="size-3.5 shrink-0"
+                          strokeWidth={2.25}
+                          aria-hidden
+                        />
+                        Cap reached
+                      </>
+                    ) : (
+                      'Under cap'
+                    )}
+                  </span>
+                </div>
+
+                <div className="mt-3">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-lg font-bold tabular-nums text-slate-900">
+                      ${chatBotStatus.aiChatBotTodayCostUsd.toFixed(4)}
+                    </span>
+                    <span className="text-xs font-medium text-slate-500">
+                      of ${values.aiChatBotMaxCostPerDayUsd.toFixed(2)} / day
+                    </span>
+                  </div>
+                  <div
+                    className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-slate-100"
+                    role="progressbar"
+                    aria-valuenow={Math.round(chatBotSpendPct)}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-label="Today's AI chat bot spend, percent of daily cap"
+                  >
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        chatBotStatus.aiChatBotDailyCapReached
+                          ? 'bg-rose-500'
+                          : 'bg-emerald-500'
+                      }`}
+                      style={{ width: `${chatBotSpendPct}%` }}
+                    />
+                  </div>
+                </div>
+
+                <p className="mt-2 text-[11px] leading-snug text-slate-500">
+                  {chatBotStatus.aiChatBotCostDate
+                    ? `As of ${chatBotStatus.aiChatBotCostDate}${
+                        chatBotStatus.aiChatBotCostDate === todayIso
+                          ? ' (today)'
+                          : ''
+                      } — resets daily.`
+                    : 'No spend recorded yet.'}
+                </p>
+              </div>
+
               <div className="rounded-xl border border-dashed border-slate-200/90 bg-slate-50/70 p-4">
                 <p className="text-xs font-semibold text-slate-600">
                   Estimated cost per prompt — {estimatedPromptCost.label}
@@ -639,6 +763,9 @@ export default function SettingsPage() {
   "aiChatBotEnabled": false,
   "aiChatBotModel": "claude-sonnet-5",
   "aiChatBotMaxCostPerDayUsd": 10,
+  "aiChatBotTodayCostUsd": 0,
+  "aiChatBotCostDate": "<YYYY-MM-DD, written by the chat bot backend>",
+  "aiChatBotDailyCapReached": false,
   "updatedAt": "<Firestore Timestamp>"
 }`}
               </pre>
