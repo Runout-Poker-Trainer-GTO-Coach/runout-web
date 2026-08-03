@@ -4,8 +4,6 @@
 export const APP_SETTINGS_FIELDS = {
   showDiscountScreenIos: 'showDiscountScreenIos',
   showDiscountScreenAndroid: 'showDiscountScreenAndroid',
-  /** Global: when true, clients may treat everyone as in an “all unlimited” experiment (see user `autoUnlimitedSession`). */
-  unlimitedSessions: 'unlimitedSessions',
   /** Percentage (0–100) of users who should see the App2Web (web checkout) option. 0 hides it for everyone, 100 shows it to all. */
   app2WebPercentage: 'app2WebPercentage',
   /** Whether the in-app AI chat bot is enabled at all. */
@@ -20,7 +18,6 @@ export const APP_SETTINGS_FIELDS = {
 export const APP_SETTINGS_DEFAULTS = {
   showDiscountScreenIos: false,
   showDiscountScreenAndroid: false,
-  unlimitedSessions: false,
   app2WebPercentage: 0,
   aiChatBotEnabled: false,
   aiChatBotModel: 'claude-sonnet-5',

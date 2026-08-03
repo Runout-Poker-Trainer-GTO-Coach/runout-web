@@ -7,9 +7,9 @@ import {
   DollarSign,
   Gauge,
   Globe,
-  Infinity as InfinityIcon,
   Loader2,
   Power,
+  RotateCcw,
   Save,
   Settings,
   Smartphone,
@@ -22,15 +22,10 @@ import {
   setDoc,
 } from 'firebase/firestore'
 import {
-  applyBulkUnlimitedDisable,
-  applyBulkUnlimitedEnable,
-} from './bulkUnlimitedSessions.js'
-import {
   db,
   firebaseReady,
   settingsCollectionName,
   settingsDocumentId,
-  usersCollectionName,
 } from './firebase'
 import {
   AI_CHAT_BOT_MODELS,
@@ -86,7 +81,6 @@ function parseSettings(data) {
     ...APP_SETTINGS_DEFAULTS,
     showDiscountScreenIos: t(APP_SETTINGS_FIELDS.showDiscountScreenIos),
     showDiscountScreenAndroid: t(APP_SETTINGS_FIELDS.showDiscountScreenAndroid),
-    unlimitedSessions: t(APP_SETTINGS_FIELDS.unlimitedSessions),
     app2WebPercentage: clampPercentage(
       d[APP_SETTINGS_FIELDS.app2WebPercentage],
     ),
@@ -226,6 +220,80 @@ function SettingsCard({ title, eyebrow, description, children, icon }) {
   )
 }
 
+/**
+ * @param {{ busy: boolean, onCancel: () => void, onConfirm: () => void }} props
+ */
+function ResetChatBotSpendModal({ busy, onCancel, onConfirm }) {
+  return (
+    <div
+      className="fixed inset-0 z-[55] flex items-end justify-center bg-slate-900/50 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      role="presentation"
+      onClick={() => {
+        if (!busy) onCancel()
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reset-chat-bot-spend-title"
+        className="w-full max-w-md rounded-t-2xl border border-amber-200 bg-white shadow-2xl sm:rounded-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 border-b border-amber-100 bg-amber-50/70 px-5 py-4">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-amber-500 text-white shadow-md shadow-amber-900/25">
+            <RotateCcw className="size-5" strokeWidth={2.25} aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2
+              id="reset-chat-bot-spend-title"
+              className="text-base font-semibold text-amber-900"
+            >
+              Reset today's AI spend?
+            </h2>
+            <p className="mt-0.5 text-xs leading-relaxed text-amber-800/80">
+              Sets today's tracked spend back to $0.00 and clears the
+              cap-reached flag. The chat bot keeps tracking new usage from
+              here — this doesn't change the daily cap itself.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-5 py-4">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="cursor-pointer rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-gradient-to-b from-amber-500 to-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-amber-900/25 transition hover:from-amber-600 hover:to-amber-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? (
+              <>
+                <Loader2
+                  className="size-4 animate-spin"
+                  strokeWidth={2}
+                  aria-hidden
+                />
+                Resetting…
+              </>
+            ) : (
+              <>
+                <RotateCcw className="size-4" strokeWidth={2} aria-hidden />
+                Reset
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPage() {
   const [loading, setLoading] = useState(!!firebaseReady)
   const [saving, setSaving] = useState(false)
@@ -236,6 +304,8 @@ export default function SettingsPage() {
   const [chatBotStatus, setChatBotStatus] = useState(() => ({
     ...AI_CHAT_BOT_STATUS_DEFAULTS,
   }))
+  const [resetSpendConfirmOpen, setResetSpendConfirmOpen] = useState(false)
+  const [resetSpendBusy, setResetSpendBusy] = useState(false)
 
   const dirty = useMemo(
     () => JSON.stringify(values) !== JSON.stringify(saved),
@@ -324,8 +394,6 @@ export default function SettingsPage() {
     if (!db || !dirty) return
     setSaving(true)
     setError(null)
-    const prevUnlimited = saved.unlimitedSessions
-    const nextUnlimited = values.unlimitedSessions
     try {
       const ref = doc(db, settingsCollectionName, settingsDocumentId)
       /** @type {Record<string, unknown>} */
@@ -337,20 +405,46 @@ export default function SettingsPage() {
         payload[fk] = values[stateKey]
       }
       await setDoc(ref, payload, { merge: true })
-      if (prevUnlimited !== nextUnlimited) {
-        if (nextUnlimited) {
-          await applyBulkUnlimitedEnable(db, usersCollectionName)
-        } else {
-          await applyBulkUnlimitedDisable(db, usersCollectionName)
-        }
-      }
       setSaved({ ...values })
     } catch (e) {
       setError(e?.message || 'Failed to save settings')
     } finally {
       setSaving(false)
     }
-  }, [values, dirty, saved.unlimitedSessions])
+  }, [values, dirty])
+
+  // Explicit, admin-triggered write to the otherwise-read-only chat bot
+  // usage fields — distinct from handleSave, which never touches them (see
+  // parseChatBotStatus above).
+  const handleResetChatBotSpend = useCallback(async () => {
+    if (!db) return
+    setResetSpendBusy(true)
+    setError(null)
+    try {
+      const ref = doc(db, settingsCollectionName, settingsDocumentId)
+      const resetDate = new Date().toISOString().slice(0, 10)
+      await setDoc(
+        ref,
+        {
+          aiChatBotTodayCostUsd: 0,
+          aiChatBotDailyCapReached: false,
+          aiChatBotCostDate: resetDate,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      )
+      setChatBotStatus({
+        aiChatBotTodayCostUsd: 0,
+        aiChatBotDailyCapReached: false,
+        aiChatBotCostDate: resetDate,
+      })
+      setResetSpendConfirmOpen(false)
+    } catch (e) {
+      setError(e?.message || "Failed to reset today's AI spend")
+    } finally {
+      setResetSpendBusy(false)
+    }
+  }, [])
 
   const todayIso = new Date().toISOString().slice(0, 10)
 
@@ -375,8 +469,8 @@ export default function SettingsPage() {
               </span>
             </div>
             <p className="mt-1 max-w-xl text-sm text-slate-600">
-              App-wide flags: discount screens, unlimited training sessions,
-              App2Web rollout, and the AI chat bot.
+              App-wide flags: discount screens, App2Web rollout, and the AI
+              chat bot.
             </p>
           </div>
         </div>
@@ -453,35 +547,6 @@ export default function SettingsPage() {
                 }
               />
               */}
-            </SettingsCard>
-
-            <SettingsCard
-              eyebrow="Sessions"
-              title="Unlimited sessions for everyone"
-              description="When on, all users who are not already set to unlimited get unlimited training sessions (tagged so you can revert only that group later). Manual per-user overrides stay respected when you turn this off."
-              icon={
-                <InfinityIcon
-                  className="size-5 text-amber-700"
-                  strokeWidth={2}
-                  aria-hidden
-                />
-              }
-            >
-              <SettingToggle
-                id="set-unlimited-sessions-all"
-                title="All users — unlimited sessions"
-                description="Save to apply: grants unlimited to users who do not already have it, or removes unlimited only from users granted by this toggle (not from manual grants)."
-                checked={values.unlimitedSessions}
-                onChange={(c) => patch({ unlimitedSessions: c })}
-                disabled={saving}
-                icon={
-                  <InfinityIcon
-                    className="size-5 text-slate-700"
-                    strokeWidth={2}
-                    aria-hidden
-                  />
-                }
-              />
             </SettingsCard>
 
             <SettingsCard
@@ -697,15 +762,29 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                <p className="mt-2 text-[11px] leading-snug text-slate-500">
-                  {chatBotStatus.aiChatBotCostDate
-                    ? `As of ${chatBotStatus.aiChatBotCostDate}${
-                        chatBotStatus.aiChatBotCostDate === todayIso
-                          ? ' (today)'
-                          : ''
-                      } — resets daily.`
-                    : 'No spend recorded yet.'}
-                </p>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <p className="text-[11px] leading-snug text-slate-500">
+                    {chatBotStatus.aiChatBotCostDate
+                      ? `As of ${chatBotStatus.aiChatBotCostDate}${
+                          chatBotStatus.aiChatBotCostDate === todayIso
+                            ? ' (today)'
+                            : ''
+                        } — resets daily.`
+                      : 'No spend recorded yet.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setResetSpendConfirmOpen(true)}
+                    className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                  >
+                    <RotateCcw
+                      className="size-3 shrink-0"
+                      strokeWidth={2.25}
+                      aria-hidden
+                    />
+                    Reset
+                  </button>
+                </div>
               </div>
 
               <div className="rounded-xl border border-dashed border-slate-200/90 bg-slate-50/70 p-4">
@@ -758,7 +837,6 @@ export default function SettingsPage() {
                 {`{
   "showDiscountScreenIos": false,
   "showDiscountScreenAndroid": false,
-  "unlimitedSessions": false,
   "app2WebPercentage": 0,
   "aiChatBotEnabled": false,
   "aiChatBotModel": "claude-sonnet-5",
@@ -773,6 +851,16 @@ export default function SettingsPage() {
           </>
         )}
       </div>
+
+      {resetSpendConfirmOpen ? (
+        <ResetChatBotSpendModal
+          busy={resetSpendBusy}
+          onCancel={() => {
+            if (!resetSpendBusy) setResetSpendConfirmOpen(false)
+          }}
+          onConfirm={handleResetChatBotSpend}
+        />
+      ) : null}
     </div>
   )
 }
