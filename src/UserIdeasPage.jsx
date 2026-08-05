@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  Calendar,
   Check,
   CheckCircle2,
   CircleDot,
@@ -54,65 +55,58 @@ function asInt(v) {
   return 0
 }
 
-/** @param {unknown} v */
-function formatDate(v) {
-  if (v == null) return '—'
+/**
+ * Normalizes any Firestore/JS timestamp shape (Timestamp instance, plain
+ * JSON-export `{_seconds}`/`{seconds}`, ISO string, epoch number) into a
+ * Date, or null if unparseable. Shared by formatDate/formatDateLabel/tsMs so
+ * the shape-detection lives in exactly one place.
+ * @param {unknown} v
+ * @returns {Date | null}
+ */
+function toDateObject(v) {
+  if (v == null) return null
   if (typeof v === 'string') {
     const d = new Date(v)
-    return Number.isNaN(d.getTime()) ? v : d.toLocaleString()
-  }
-  if (typeof v === 'object' && v !== null) {
-    // Firestore Timestamp (client SDK) → .toDate()
-    if ('toDate' in v) {
-      try {
-        return /** @type {{ toDate: () => Date }} */ (v).toDate().toLocaleString()
-      } catch {
-        return '—'
-      }
-    }
-    // Plain JSON Firestore-export shape: { _seconds, _nanoseconds }
-    if ('_seconds' in v && typeof (/** @type {any} */ (v))._seconds === 'number') {
-      return new Date(
-        /** @type {any} */ (v)._seconds * 1000,
-      ).toLocaleString()
-    }
-    if ('seconds' in v && typeof (/** @type {any} */ (v)).seconds === 'number') {
-      return new Date(
-        /** @type {any} */ (v).seconds * 1000,
-      ).toLocaleString()
-    }
+    return Number.isNaN(d.getTime()) ? null : d
   }
   if (typeof v === 'number') {
     const d = new Date(v)
-    if (!Number.isNaN(d.getTime())) return d.toLocaleString()
+    return Number.isNaN(d.getTime()) ? null : d
   }
-  return String(v)
+  if (typeof v === 'object') {
+    if ('toDate' in v) {
+      try {
+        return /** @type {{ toDate: () => Date }} */ (v).toDate()
+      } catch {
+        return null
+      }
+    }
+    if ('_seconds' in v && typeof (/** @type {any} */ (v))._seconds === 'number') {
+      return new Date(/** @type {any} */ (v)._seconds * 1000)
+    }
+    if ('seconds' in v && typeof (/** @type {any} */ (v)).seconds === 'number') {
+      return new Date(/** @type {any} */ (v).seconds * 1000)
+    }
+  }
+  return null
+}
+
+/** Short date label for prominent display — e.g. "Aug 4, 2026". Null if unparseable. */
+function formatDateLabel(v) {
+  const d = toDateObject(v)
+  return d
+    ? d.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    : null
 }
 
 /** ms-since-epoch for newest-first sorting. Handles every Firestore shape. */
 function tsMs(v) {
-  if (v == null) return 0
-  if (typeof v === 'string') {
-    const t = Date.parse(v)
-    return Number.isFinite(t) ? t : 0
-  }
-  if (typeof v === 'number' && Number.isFinite(v)) return v
-  if (typeof v === 'object' && v !== null) {
-    if ('toDate' in v) {
-      try {
-        return /** @type {{ toDate: () => Date }} */ (v).toDate().getTime()
-      } catch {
-        return 0
-      }
-    }
-    if ('_seconds' in v && typeof (/** @type {any} */ (v))._seconds === 'number') {
-      return /** @type {any} */ (v)._seconds * 1000
-    }
-    if ('seconds' in v && typeof (/** @type {any} */ (v)).seconds === 'number') {
-      return /** @type {any} */ (v).seconds * 1000
-    }
-  }
-  return 0
+  const d = toDateObject(v)
+  return d ? d.getTime() : 0
 }
 
 export default function UserIdeasPage() {
@@ -476,6 +470,7 @@ export default function UserIdeasPage() {
           {filtered.map((r) => {
             const completed = asBool(r.isCompleted)
             const voters = asInt(r.voteCount)
+            const dateLabel = formatDateLabel(r.createdAt)
             const id = String(r.firestoreDocId)
             return (
               <article
@@ -517,6 +512,16 @@ export default function UserIdeasPage() {
                     {completed ? 'Added' : 'Idea'}
                   </span>
                 </div>
+                {dateLabel ? (
+                  <p className="-mt-1 flex items-center gap-1 text-xs font-medium text-slate-400">
+                    <Calendar
+                      className="size-3 shrink-0"
+                      strokeWidth={2.25}
+                      aria-hidden
+                    />
+                    Submitted {dateLabel}
+                  </p>
+                ) : null}
                 {asStr(r.body).trim() !== '' ? (
                   <p className="line-clamp-5 whitespace-pre-wrap text-sm leading-relaxed text-slate-600">
                     {asStr(r.body)}
@@ -533,9 +538,6 @@ export default function UserIdeasPage() {
                       aria-hidden
                     />
                     {voters} {voters === 1 ? 'vote' : 'votes'}
-                  </span>
-                  <span className="ml-auto shrink-0">
-                    {formatDate(r.createdAt)}
                   </span>
                 </div>
                 <div className="-mx-1 flex flex-wrap gap-1 border-t border-slate-100 pt-2">
