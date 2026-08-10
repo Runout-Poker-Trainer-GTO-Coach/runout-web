@@ -6037,9 +6037,20 @@ function UploadQuestionsModal({
                           </span>
                         ) : null}
                       </p>
-                      <p className="text-[10.5px] text-slate-500">
-                        {CSV_HEADERS.length} columns · scroll →
-                      </p>
+                      <div className="flex items-center gap-3">
+                        {updateCount > 0 ? (
+                          <span className="inline-flex items-center gap-1.5 text-[10.5px] text-slate-500">
+                            <span
+                              className="size-2.5 shrink-0 rounded-sm border border-amber-300 bg-amber-100/80"
+                              aria-hidden
+                            />
+                            = field will change
+                          </span>
+                        ) : null}
+                        <p className="text-[10.5px] text-slate-500">
+                          {CSV_HEADERS.length} columns · scroll →
+                        </p>
+                      </div>
                     </div>
                     <div
                       className="overflow-auto"
@@ -6092,6 +6103,14 @@ function UploadQuestionsModal({
                             const invalid = action.kind === 'invalid'
                             const isUpdate = action.kind === 'update'
                             const isUnchanged = action.kind === 'unchanged'
+                            // Existing doc for this row, so per-cell render
+                            // below can diff each field individually — the
+                            // same comparison rowActions already used to
+                            // decide UPDATE vs UNCHANGED, just surfaced per
+                            // column instead of collapsed into one boolean.
+                            const existingRow = isUpdate
+                              ? existingByNumericId?.get(action.matchedSourceId)
+                              : null
                             const rowBg = invalid
                               ? 'bg-rose-50/60'
                               : isUpdate
@@ -6162,23 +6181,61 @@ function UploadQuestionsModal({
                                     /** @type {readonly string[]} */ (
                                       CSV_REQUIRED_FIELDS
                                     ).includes(h) && text.trim() === ''
+                                  // Only cells that actually differ from the
+                                  // existing doc — same comparison and same
+                                  // "field present in this CSV" gate as the
+                                  // UPDATE/UNCHANGED classification above,
+                                  // just evaluated per column.
+                                  const isChangedField =
+                                    isUpdate &&
+                                    existingRow != null &&
+                                    Object.prototype.hasOwnProperty.call(r, h) &&
+                                    !csvValueEqualsExisting(
+                                      h,
+                                      raw,
+                                      existingRow[h],
+                                    )
+                                  const existingText = isChangedField
+                                    ? existingRow[h] == null ||
+                                      existingRow[h] === ''
+                                      ? '(empty)'
+                                      : String(existingRow[h])
+                                    : null
                                   return (
                                     <td
                                       key={h}
-                                      className="border-b border-r border-slate-100 px-2 py-1 align-top text-slate-700"
+                                      className={`border-b px-2 py-1 align-top ${
+                                        isChangedField
+                                          ? 'border-r border-amber-300 bg-amber-100/80 text-amber-950'
+                                          : 'border-r border-slate-100 text-slate-700'
+                                      }`}
                                       style={{
                                         minWidth: 160,
                                         maxWidth: 320,
                                       }}
-                                      title={text}
+                                      title={
+                                        isChangedField
+                                          ? `Changing: "${existingText}" → "${text}"`
+                                          : text
+                                      }
                                     >
                                       {text ? (
-                                        <span className="line-clamp-2 break-words leading-snug">
+                                        <span
+                                          className={`line-clamp-2 break-words leading-snug ${
+                                            isChangedField
+                                              ? 'font-semibold'
+                                              : ''
+                                          }`}
+                                        >
                                           {text}
                                         </span>
                                       ) : isMissingRequired ? (
                                         <span className="italic text-rose-700">
                                           missing
+                                        </span>
+                                      ) : isChangedField ? (
+                                        <span className="italic text-amber-800">
+                                          (clearing)
                                         </span>
                                       ) : (
                                         <span className="text-slate-300">
