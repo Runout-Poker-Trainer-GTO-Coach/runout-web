@@ -3,11 +3,14 @@ import {
   AlertTriangle,
   BadgePercent,
   Bot,
+  ChevronLeft,
+  ChevronRight,
   Cpu,
   DollarSign,
   Gauge,
   Globe,
   Loader2,
+  MessageSquare,
   Power,
   RotateCcw,
   Save,
@@ -36,6 +39,50 @@ import {
   estimateChatBotPromptCostUsd,
 } from './settingsConstants.js'
 import PercentageSlider from './PercentageSlider.jsx'
+
+/**
+ * Chat bot backend's own spend-history endpoint — separate from Firestore's
+ * `aiChatBotTodayCostUsd`. Public GET, CORS-open (`access-control-allow-origin: *`),
+ * no auth. Returns `by_day: [{ day: "YYYY-MM-DD", cost_usd, turns }, ...]`
+ * for roughly the last two weeks, used only to browse prior days — "today"
+ * in this page still comes from Firestore, since that's what the daily-cap
+ * enforcement and the Reset button actually act on.
+ */
+const CHAT_BOT_SPEND_API_URL =
+  'https://coach-api-tv3w6ws4bq-uc.a.run.app/admin/spend'
+
+/** @param {string} iso  YYYY-MM-DD */
+function addDaysIso(iso, delta) {
+  const d = new Date(`${iso}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + delta)
+  return d.toISOString().slice(0, 10)
+}
+
+/** "2026-08-12" → "Aug 12, 2026". Formatted in UTC to match the UTC-anchored
+ *  date arithmetic above — otherwise a viewer west of UTC would see dates
+ *  shifted a day early. */
+function formatFriendlyDate(iso) {
+  if (!iso) return null
+  const d = new Date(`${iso}T00:00:00Z`)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+
+/** Small "3 days ago" / "Yesterday" subtitle for the day stepper. */
+function daysAgoLabel(iso, todayIsoStr) {
+  if (!iso) return ''
+  const a = new Date(`${iso}T00:00:00Z`).getTime()
+  const b = new Date(`${todayIsoStr}T00:00:00Z`).getTime()
+  const diff = Math.round((b - a) / 86_400_000)
+  if (diff <= 0) return 'Today'
+  if (diff === 1) return 'Yesterday'
+  return `${diff} days ago`
+}
 
 /**
  * @param {Record<string, unknown> | undefined} data
@@ -306,6 +353,23 @@ export default function SettingsPage() {
   }))
   const [resetSpendConfirmOpen, setResetSpendConfirmOpen] = useState(false)
   const [resetSpendBusy, setResetSpendBusy] = useState(false)
+  // Prior-day browsing — null means "today" (the Firestore-driven live
+  // view above). A date string means "showing that day's history from the
+  // chat bot's own /admin/spend API" (read-only — no Reset, no cap badge).
+  const [selectedSpendDate, setSelectedSpendDate] = useState(
+    /** @type {string | null} */ (null),
+  )
+  const [spendHistory, setSpendHistory] = useState(
+    /** @type {{ by_day: Array<{ day: string, cost_usd: number, turns: number }> } | null} */ (
+      null
+    ),
+  )
+  const [spendHistoryLoading, setSpendHistoryLoading] = useState(true)
+  const [spendHistoryError, setSpendHistoryError] = useState(
+    /** @type {string | null} */ (null),
+  )
+
+  const todayIso = new Date().toISOString().slice(0, 10)
 
   const dirty = useMemo(
     () => JSON.stringify(values) !== JSON.stringify(saved),
@@ -356,6 +420,71 @@ export default function SettingsPage() {
     if (cap <= 0) return spent > 0 ? 100 : 0
     return Math.max(0, Math.min(100, (spent / cap) * 100))
   }, [chatBotStatus.aiChatBotTodayCostUsd, values.aiChatBotMaxCostPerDayUsd])
+
+  // Fetched once, unconditionally — a public read with no auth, cheap
+  // enough to have ready before the admin ever clicks the prev-day arrow.
+  useEffect(() => {
+    let cancelled = false
+    setSpendHistoryLoading(true)
+    setSpendHistoryError(null)
+    fetch(CHAT_BOT_SPEND_API_URL)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Spend API returned ${res.status}`)
+        return res.json()
+      })
+      .then((data) => {
+        if (!cancelled) setSpendHistory(data)
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setSpendHistoryError(e?.message || 'Failed to load spend history')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSpendHistoryLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const goToPrevSpendDay = useCallback(() => {
+    setSelectedSpendDate((curr) => addDaysIso(curr ?? todayIso, -1))
+  }, [todayIso])
+
+  const goToNextSpendDay = useCallback(() => {
+    setSelectedSpendDate((curr) => {
+      if (curr == null) return curr // already at today
+      const next = addDaysIso(curr, 1)
+      return next >= todayIso ? null : next
+    })
+  }, [todayIso])
+
+  // What the spend card actually renders — today is Firestore's live
+  // counter (unchanged); any other day is a read-only lookup into the API
+  // history, gracefully defaulting to $0 for a day with no entry (the API
+  // omits zero-activity days rather than listing them explicitly).
+  const spendDayView = useMemo(() => {
+    if (selectedSpendDate == null) {
+      return {
+        isToday: true,
+        dateIso: chatBotStatus.aiChatBotCostDate,
+        costUsd: chatBotStatus.aiChatBotTodayCostUsd,
+        capReached: chatBotStatus.aiChatBotDailyCapReached,
+        turns: /** @type {number | null} */ (null),
+      }
+    }
+    const entry = spendHistory?.by_day?.find(
+      (d) => d.day === selectedSpendDate,
+    )
+    return {
+      isToday: false,
+      dateIso: selectedSpendDate,
+      costUsd: entry?.cost_usd ?? 0,
+      capReached: false,
+      turns: entry?.turns ?? 0,
+    }
+  }, [selectedSpendDate, chatBotStatus, spendHistory])
 
   useEffect(() => {
     if (!firebaseReady || !db) {
@@ -445,8 +574,6 @@ export default function SettingsPage() {
       setResetSpendBusy(false)
     }
   }, [])
-
-  const todayIso = new Date().toISOString().slice(0, 10)
 
   return (
     <div className="min-h-[calc(100vh-3rem)] bg-gradient-to-b from-emerald-50/35 via-slate-50/90 to-slate-100/80 px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
@@ -705,39 +832,57 @@ export default function SettingsPage() {
                     </div>
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-slate-900">
-                        Today's spend
+                        {spendDayView.isToday
+                          ? "Today's spend"
+                          : 'Spend that day'}
                       </p>
                       <p className="text-xs leading-snug text-slate-500">
-                        Live usage tracked by the chat bot — read-only here.
+                        Live usage tracked by the chat bot. Use the arrows
+                        below to browse prior days.
                       </p>
                     </div>
                   </div>
-                  <span
-                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
-                      chatBotStatus.aiChatBotDailyCapReached
-                        ? 'bg-rose-50 text-rose-800 ring-rose-200'
-                        : 'bg-emerald-50 text-emerald-800 ring-emerald-200/80'
-                    }`}
-                  >
-                    {chatBotStatus.aiChatBotDailyCapReached ? (
-                      <>
-                        <AlertTriangle
-                          className="size-3.5 shrink-0"
-                          strokeWidth={2.25}
-                          aria-hidden
-                        />
-                        Cap reached
-                      </>
-                    ) : (
-                      'Under cap'
-                    )}
-                  </span>
+                  {spendDayView.isToday ? (
+                    <span
+                      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
+                        spendDayView.capReached
+                          ? 'bg-rose-50 text-rose-800 ring-rose-200'
+                          : 'bg-emerald-50 text-emerald-800 ring-emerald-200/80'
+                      }`}
+                    >
+                      {spendDayView.capReached ? (
+                        <>
+                          <AlertTriangle
+                            className="size-3.5 shrink-0"
+                            strokeWidth={2.25}
+                            aria-hidden
+                          />
+                          Cap reached
+                        </>
+                      ) : (
+                        'Under cap'
+                      )}
+                    </span>
+                  ) : (
+                    <span
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600 ring-1 ring-slate-200"
+                      title="Chat turns that day"
+                    >
+                      <MessageSquare
+                        className="size-3.5 shrink-0"
+                        strokeWidth={2.25}
+                        aria-hidden
+                      />
+                      {(spendDayView.turns ?? 0).toLocaleString()}{' '}
+                      {spendDayView.turns === 1 ? 'turn' : 'turns'}
+                    </span>
+                  )}
                 </div>
 
                 <div className="mt-3">
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="text-lg font-bold tabular-nums text-slate-900">
-                      ${chatBotStatus.aiChatBotTodayCostUsd.toFixed(4)}
+                      ${spendDayView.costUsd.toFixed(4)}
                     </span>
                     <span className="text-xs font-medium text-slate-500">
                       of ${values.aiChatBotMaxCostPerDayUsd.toFixed(2)} / day
@@ -749,42 +894,83 @@ export default function SettingsPage() {
                     aria-valuenow={Math.round(chatBotSpendPct)}
                     aria-valuemin={0}
                     aria-valuemax={100}
-                    aria-label="Today's AI chat bot spend, percent of daily cap"
+                    aria-label="AI chat bot spend that day, percent of daily cap"
                   >
                     <div
                       className={`h-full rounded-full transition-all ${
-                        chatBotStatus.aiChatBotDailyCapReached
+                        spendDayView.capReached
                           ? 'bg-rose-500'
-                          : 'bg-emerald-500'
+                          : spendDayView.isToday
+                            ? 'bg-emerald-500'
+                            : 'bg-slate-400'
                       }`}
                       style={{ width: `${chatBotSpendPct}%` }}
                     />
                   </div>
                 </div>
 
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <p className="text-[11px] leading-snug text-slate-500">
-                    {chatBotStatus.aiChatBotCostDate
-                      ? `As of ${chatBotStatus.aiChatBotCostDate}${
-                          chatBotStatus.aiChatBotCostDate === todayIso
-                            ? ' (today)'
-                            : ''
-                        } — resets daily.`
-                      : 'No spend recorded yet.'}
-                  </p>
+                <div className="mt-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-1.5">
                   <button
                     type="button"
-                    onClick={() => setResetSpendConfirmOpen(true)}
-                    className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                    onClick={goToPrevSpendDay}
+                    disabled={spendHistoryLoading}
+                    aria-label="Previous day"
+                    title="Previous day"
+                    className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-violet-300 hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <RotateCcw
-                      className="size-3 shrink-0"
-                      strokeWidth={2.25}
-                      aria-hidden
-                    />
-                    Reset
+                    <ChevronLeft className="size-4" strokeWidth={2.5} aria-hidden />
                   </button>
+
+                  <div className="flex min-w-0 flex-1 flex-col items-center">
+                    <p className="text-sm font-semibold tabular-nums text-slate-900">
+                      {formatFriendlyDate(spendDayView.dateIso) ?? '—'}
+                    </p>
+                    <p className="text-[10.5px] text-slate-500">
+                      {spendDayView.dateIso
+                        ? daysAgoLabel(spendDayView.dateIso, todayIso)
+                        : 'No spend recorded yet'}
+                      {spendDayView.isToday ? ' · resets daily' : ''}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={goToNextSpendDay}
+                    disabled={spendDayView.isToday || spendHistoryLoading}
+                    aria-label="Next day"
+                    title="Next day"
+                    className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-violet-300 hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <ChevronRight className="size-4" strokeWidth={2.5} aria-hidden />
+                  </button>
+
+                  <div className="w-px shrink-0 self-stretch bg-slate-200" aria-hidden />
+
+                  {spendDayView.isToday ? (
+                    <button
+                      type="button"
+                      onClick={() => setResetSpendConfirmOpen(true)}
+                      className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-600 transition hover:bg-white hover:text-slate-900 hover:shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+                    >
+                      <RotateCcw className="size-3.5 shrink-0" strokeWidth={2.25} aria-hidden />
+                      Reset
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSpendDate(null)}
+                      className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-violet-600 px-2.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-1"
+                    >
+                      Jump to today
+                    </button>
+                  )}
                 </div>
+                {spendHistoryError ? (
+                  <p className="mt-1.5 text-[10.5px] text-rose-600">
+                    Couldn't load spend history for prior days:{' '}
+                    {spendHistoryError}
+                  </p>
+                ) : null}
               </div>
 
               <div className="rounded-xl border border-dashed border-slate-200/90 bg-slate-50/70 p-4">
