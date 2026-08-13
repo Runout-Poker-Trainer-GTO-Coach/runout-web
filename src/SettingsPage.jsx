@@ -10,12 +10,14 @@ import {
   Gauge,
   Globe,
   Loader2,
+  Maximize2,
   MessageSquare,
   Power,
   RotateCcw,
   Save,
   Settings,
   Smartphone,
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
@@ -341,6 +343,173 @@ function ResetChatBotSpendModal({ busy, onCancel, onConfirm }) {
   )
 }
 
+/**
+ * @param {{ label: string, usd: number | undefined, sub?: string }} props
+ */
+function SpendStatCard({ label, usd, sub }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+        {label}
+      </p>
+      <p className="mt-1 text-2xl font-bold tabular-nums text-slate-900">
+        ${(usd ?? 0).toFixed(2)}
+      </p>
+      {sub ? <p className="mt-0.5 text-[11px] text-slate-500">{sub}</p> : null}
+    </div>
+  )
+}
+
+/**
+ * Full-screen browse view over the chat bot's /admin/spend history — the
+ * inline card only steps one day at a time; this shows the whole shape at
+ * once (this-month / all-time totals plus every day on record) and lets the
+ * admin jump straight to one.
+ * @param {{
+ *   spendHistory: Record<string, unknown> | null
+ *   todayIso: string
+ *   onClose: () => void
+ *   onSelectDay: (dayIso: string) => void
+ * }} props
+ */
+function SpendHistoryModal({ spendHistory, todayIso, onClose, onSelectDay }) {
+  const days = /** @type {Array<{ day: string, cost_usd: number, turns: number }>} */ (
+    spendHistory?.by_day ?? []
+  )
+  const maxCost = Math.max(0.0001, ...days.map((d) => d.cost_usd))
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex flex-col bg-white"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="spend-history-title"
+    >
+      <header className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
+        <div className="flex items-center gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-600 text-white shadow-md shadow-violet-900/20">
+            <Gauge className="size-4.5" strokeWidth={2.25} aria-hidden />
+          </div>
+          <div>
+            <h2
+              id="spend-history-title"
+              className="text-base font-semibold text-slate-900"
+            >
+              AI chat bot spend history
+            </h2>
+            <p className="text-xs text-slate-500">
+              Day-by-day usage from the chat bot's own records.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="cursor-pointer rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+        >
+          <X className="size-5" strokeWidth={2} aria-hidden />
+        </button>
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+        <div className="mx-auto max-w-3xl">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <SpendStatCard
+              label="Today"
+              usd={/** @type {number} */ (spendHistory?.spend_today_usd)}
+              sub={`${Number(
+                spendHistory?.turns_today ?? 0,
+              ).toLocaleString()} turns · ${Number(
+                spendHistory?.conversations_today ?? 0,
+              ).toLocaleString()} conversations`}
+            />
+            <SpendStatCard
+              label="This month"
+              usd={/** @type {number} */ (spendHistory?.spend_month_usd)}
+              sub={`${Number(
+                spendHistory?.turns_month ?? 0,
+              ).toLocaleString()} turns`}
+            />
+            <SpendStatCard
+              label="All time"
+              usd={/** @type {number} */ (spendHistory?.spend_all_time_usd)}
+              sub={`${Number(
+                spendHistory?.turns_all_time ?? 0,
+              ).toLocaleString()} turns · ${Number(
+                spendHistory?.conversations_all_time ?? 0,
+              ).toLocaleString()} conversations`}
+            />
+          </div>
+
+          {spendHistory?.cost_per_conversation_usd != null ? (
+            <p className="mt-2 text-center text-[11px] text-slate-400">
+              ~$
+              {Number(spendHistory.cost_per_conversation_usd).toFixed(4)} per
+              conversation, all-time average
+            </p>
+          ) : null}
+
+          <div className="mt-6">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              By day ({days.length})
+            </p>
+            <div className="overflow-hidden rounded-xl border border-slate-200">
+              {days.length === 0 ? (
+                <p className="px-4 py-6 text-center text-sm text-slate-400">
+                  No history available yet.
+                </p>
+              ) : (
+                days.map((d, i) => (
+                  <button
+                    key={d.day}
+                    type="button"
+                    onClick={() => onSelectDay(d.day)}
+                    className={`flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left transition hover:bg-violet-50 focus:outline-none focus-visible:bg-violet-50 ${
+                      i > 0 ? 'border-t border-slate-100' : ''
+                    }`}
+                  >
+                    <div className="w-28 shrink-0">
+                      <p className="text-sm font-semibold text-slate-900">
+                        {formatFriendlyDate(d.day)}
+                      </p>
+                      <p className="text-[10.5px] text-slate-400">
+                        {d.day === todayIso
+                          ? 'Today'
+                          : daysAgoLabel(d.day, todayIso)}
+                      </p>
+                    </div>
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+                      <div
+                        className="h-full rounded-full bg-violet-400"
+                        style={{ width: `${(d.cost_usd / maxCost) * 100}%` }}
+                      />
+                    </div>
+                    <div className="w-20 shrink-0 text-right text-sm font-bold tabular-nums text-slate-900">
+                      ${d.cost_usd.toFixed(4)}
+                    </div>
+                    <div className="w-20 shrink-0 text-right text-xs text-slate-400">
+                      {d.turns.toLocaleString()} turns
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPage() {
   const [loading, setLoading] = useState(!!firebaseReady)
   const [saving, setSaving] = useState(false)
@@ -353,6 +522,7 @@ export default function SettingsPage() {
   }))
   const [resetSpendConfirmOpen, setResetSpendConfirmOpen] = useState(false)
   const [resetSpendBusy, setResetSpendBusy] = useState(false)
+  const [spendHistoryModalOpen, setSpendHistoryModalOpen] = useState(false)
   // Prior-day browsing — null means "today" (the Firestore-driven live
   // view above). A date string means "showing that day's history from the
   // chat bot's own /admin/spend API" (read-only — no Reset, no cap badge).
@@ -459,6 +629,17 @@ export default function SettingsPage() {
       return next >= todayIso ? null : next
     })
   }, [todayIso])
+
+  // From the history modal's day list — jump the card straight to that day
+  // (or back to the live view, if the day picked happens to be today) and
+  // close the modal.
+  const handleSelectSpendDay = useCallback(
+    (/** @type {string} */ dayIso) => {
+      setSelectedSpendDate(dayIso === todayIso ? null : dayIso)
+      setSpendHistoryModalOpen(false)
+    },
+    [todayIso],
+  )
 
   // What the spend card actually renders — today is Firestore's live
   // counter (unchanged); any other day is a read-only lookup into the API
@@ -842,41 +1023,52 @@ export default function SettingsPage() {
                       </p>
                     </div>
                   </div>
-                  {spendDayView.isToday ? (
-                    <span
-                      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
-                        spendDayView.capReached
-                          ? 'bg-rose-50 text-rose-800 ring-rose-200'
-                          : 'bg-emerald-50 text-emerald-800 ring-emerald-200/80'
-                      }`}
+                  <div className="flex shrink-0 items-center gap-2">
+                    {spendDayView.isToday ? (
+                      <span
+                        className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${
+                          spendDayView.capReached
+                            ? 'bg-rose-50 text-rose-800 ring-rose-200'
+                            : 'bg-emerald-50 text-emerald-800 ring-emerald-200/80'
+                        }`}
+                      >
+                        {spendDayView.capReached ? (
+                          <>
+                            <AlertTriangle
+                              className="size-3.5 shrink-0"
+                              strokeWidth={2.25}
+                              aria-hidden
+                            />
+                            Cap reached
+                          </>
+                        ) : (
+                          'Under cap'
+                        )}
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600 ring-1 ring-slate-200"
+                        title="Chat turns that day"
+                      >
+                        <MessageSquare
+                          className="size-3.5 shrink-0"
+                          strokeWidth={2.25}
+                          aria-hidden
+                        />
+                        {(spendDayView.turns ?? 0).toLocaleString()}{' '}
+                        {spendDayView.turns === 1 ? 'turn' : 'turns'}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setSpendHistoryModalOpen(true)}
+                      aria-label="View full spend history"
+                      title="View full spend history"
+                      className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-violet-300 hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
                     >
-                      {spendDayView.capReached ? (
-                        <>
-                          <AlertTriangle
-                            className="size-3.5 shrink-0"
-                            strokeWidth={2.25}
-                            aria-hidden
-                          />
-                          Cap reached
-                        </>
-                      ) : (
-                        'Under cap'
-                      )}
-                    </span>
-                  ) : (
-                    <span
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600 ring-1 ring-slate-200"
-                      title="Chat turns that day"
-                    >
-                      <MessageSquare
-                        className="size-3.5 shrink-0"
-                        strokeWidth={2.25}
-                        aria-hidden
-                      />
-                      {(spendDayView.turns ?? 0).toLocaleString()}{' '}
-                      {spendDayView.turns === 1 ? 'turn' : 'turns'}
-                    </span>
-                  )}
+                      <Maximize2 className="size-3.5" strokeWidth={2.25} aria-hidden />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-3">
@@ -1045,6 +1237,15 @@ export default function SettingsPage() {
             if (!resetSpendBusy) setResetSpendConfirmOpen(false)
           }}
           onConfirm={handleResetChatBotSpend}
+        />
+      ) : null}
+
+      {spendHistoryModalOpen ? (
+        <SpendHistoryModal
+          spendHistory={spendHistory}
+          todayIso={todayIso}
+          onClose={() => setSpendHistoryModalOpen(false)}
+          onSelectDay={handleSelectSpendDay}
         />
       ) : null}
     </div>
