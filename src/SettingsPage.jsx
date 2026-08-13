@@ -344,19 +344,48 @@ function ResetChatBotSpendModal({ busy, onCancel, onConfirm }) {
 }
 
 /**
- * @param {{ label: string, usd: number | undefined, sub?: string }} props
+ * @param {{ label: string, usd: number | undefined, sub?: string, capBadge?: import('react').ReactNode }} props
  */
-function SpendStatCard({ label, usd, sub }) {
+function SpendStatCard({ label, usd, sub, capBadge }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-        {label}
-      </p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+          {label}
+        </p>
+        {capBadge}
+      </div>
       <p className="mt-1 text-2xl font-bold tabular-nums text-slate-900">
         ${(usd ?? 0).toFixed(2)}
       </p>
       {sub ? <p className="mt-0.5 text-[11px] text-slate-500">{sub}</p> : null}
     </div>
+  )
+}
+
+/**
+ * Small pill mirroring the inline card's cap badge — reused wherever the
+ * history modal shows a day that can be judged against the daily cap.
+ * @param {{ capReached: boolean }} props
+ */
+function CapBadge({ capReached }) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9.5px] font-bold ring-1 ${
+        capReached
+          ? 'bg-rose-50 text-rose-700 ring-rose-200'
+          : 'bg-emerald-50 text-emerald-700 ring-emerald-200/80'
+      }`}
+    >
+      {capReached ? (
+        <>
+          <AlertTriangle className="size-2.5 shrink-0" strokeWidth={2.5} aria-hidden />
+          Cap hit
+        </>
+      ) : (
+        'Under cap'
+      )}
+    </span>
   )
 }
 
@@ -368,15 +397,28 @@ function SpendStatCard({ label, usd, sub }) {
  * @param {{
  *   spendHistory: Record<string, unknown> | null
  *   todayIso: string
+ *   maxCostPerDayUsd: number
+ *   todayCapReached: boolean
  *   onClose: () => void
  *   onSelectDay: (dayIso: string) => void
  * }} props
  */
-function SpendHistoryModal({ spendHistory, todayIso, onClose, onSelectDay }) {
+function SpendHistoryModal({
+  spendHistory,
+  todayIso,
+  maxCostPerDayUsd,
+  todayCapReached,
+  onClose,
+  onSelectDay,
+}) {
   const days = /** @type {Array<{ day: string, cost_usd: number, turns: number }>} */ (
     spendHistory?.by_day ?? []
   )
-  const maxCost = Math.max(0.0001, ...days.map((d) => d.cost_usd))
+  // Bars fill relative to the daily cap (not the busiest day on record) so
+  // the modal reads the same "how close to the cap" story as the inline
+  // card — a day can visibly overflow the bar if it somehow exceeded the
+  // cap in effect at the time.
+  const cap = maxCostPerDayUsd > 0 ? maxCostPerDayUsd : 0.0001
 
   useEffect(() => {
     function onKey(e) {
@@ -431,6 +473,7 @@ function SpendHistoryModal({ spendHistory, todayIso, onClose, onSelectDay }) {
               ).toLocaleString()} turns · ${Number(
                 spendHistory?.conversations_today ?? 0,
               ).toLocaleString()} conversations`}
+              capBadge={<CapBadge capReached={todayCapReached} />}
             />
             <SpendStatCard
               label="This month"
@@ -468,39 +511,54 @@ function SpendHistoryModal({ spendHistory, todayIso, onClose, onSelectDay }) {
                   No history available yet.
                 </p>
               ) : (
-                days.map((d, i) => (
-                  <button
-                    key={d.day}
-                    type="button"
-                    onClick={() => onSelectDay(d.day)}
-                    className={`flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left transition hover:bg-violet-50 focus:outline-none focus-visible:bg-violet-50 ${
-                      i > 0 ? 'border-t border-slate-100' : ''
-                    }`}
-                  >
-                    <div className="w-28 shrink-0">
-                      <p className="text-sm font-semibold text-slate-900">
-                        {formatFriendlyDate(d.day)}
-                      </p>
-                      <p className="text-[10.5px] text-slate-400">
-                        {d.day === todayIso
-                          ? 'Today'
-                          : daysAgoLabel(d.day, todayIso)}
-                      </p>
-                    </div>
-                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
-                      <div
-                        className="h-full rounded-full bg-violet-400"
-                        style={{ width: `${(d.cost_usd / maxCost) * 100}%` }}
-                      />
-                    </div>
-                    <div className="w-20 shrink-0 text-right text-sm font-bold tabular-nums text-slate-900">
-                      ${d.cost_usd.toFixed(4)}
-                    </div>
-                    <div className="w-20 shrink-0 text-right text-xs text-slate-400">
-                      {d.turns.toLocaleString()} turns
-                    </div>
-                  </button>
-                ))
+                days.map((d, i) => {
+                  // The API doesn't report a historical cap-reached flag —
+                  // derive it the same way the cap itself is enforced
+                  // (spend >= cap). Today instead trusts Firestore's own
+                  // flag, since that's what the backend actually acted on.
+                  const isToday = d.day === todayIso
+                  const capReached = isToday
+                    ? todayCapReached
+                    : d.cost_usd >= cap
+                  return (
+                    <button
+                      key={d.day}
+                      type="button"
+                      onClick={() => onSelectDay(d.day)}
+                      className={`flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left transition hover:bg-violet-50 focus:outline-none focus-visible:bg-violet-50 ${
+                        i > 0 ? 'border-t border-slate-100' : ''
+                      }`}
+                    >
+                      <div className="w-28 shrink-0">
+                        <p className="text-sm font-semibold text-slate-900">
+                          {formatFriendlyDate(d.day)}
+                        </p>
+                        <p className="text-[10.5px] text-slate-400">
+                          {isToday ? 'Today' : daysAgoLabel(d.day, todayIso)}
+                        </p>
+                      </div>
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className={`h-full rounded-full ${
+                            capReached ? 'bg-rose-500' : 'bg-violet-400'
+                          }`}
+                          style={{
+                            width: `${Math.min(100, (d.cost_usd / cap) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <div className="w-20 shrink-0 text-right text-sm font-bold tabular-nums text-slate-900">
+                        ${d.cost_usd.toFixed(4)}
+                      </div>
+                      <div className="w-20 shrink-0 text-right text-xs text-slate-400">
+                        {d.turns.toLocaleString()} turns
+                      </div>
+                      <div className="w-16 shrink-0 text-right">
+                        <CapBadge capReached={capReached} />
+                      </div>
+                    </button>
+                  )
+                })
               )}
             </div>
           </div>
@@ -1244,6 +1302,8 @@ export default function SettingsPage() {
         <SpendHistoryModal
           spendHistory={spendHistory}
           todayIso={todayIso}
+          maxCostPerDayUsd={values.aiChatBotMaxCostPerDayUsd}
+          todayCapReached={chatBotStatus.aiChatBotDailyCapReached}
           onClose={() => setSpendHistoryModalOpen(false)}
           onSelectDay={handleSelectSpendDay}
         />
