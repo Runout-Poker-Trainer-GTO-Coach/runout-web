@@ -4,6 +4,7 @@ import {
   FlaskConical,
   LogOut,
   MessageCircleQuestion,
+  MessageSquareWarning,
   Settings,
   Sparkles,
   UsersRound,
@@ -11,7 +12,7 @@ import {
 } from 'lucide-react'
 import { clearAdminSession } from './adminAuth'
 
-/** @typedef {'users' | 'questions' | 'lesson-reports' | 'user-ideas' | 'experiments' | 'settings'} AdminSection */
+/** @typedef {'users' | 'questions' | 'lesson-reports' | 'beginner-flow-reports' | 'user-ideas' | 'experiments' | 'settings'} AdminSection */
 
 /** @typedef {'full' | 'reports'} AdminAccess */
 
@@ -19,6 +20,7 @@ const navItemsAll = /** @type {const} */ ([
   { id: 'users', label: 'Users', icon: UsersRound },
   { id: 'questions', label: 'Questions', icon: MessageCircleQuestion },
   { id: 'lesson-reports', label: 'Lesson reports', icon: BookOpen },
+  { id: 'beginner-flow-reports', label: 'Beginner Flow Reports', icon: MessageSquareWarning },
   { id: 'user-ideas', label: 'User Ideas', icon: Sparkles },
   { id: 'experiments', label: 'Experiments', icon: FlaskConical },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -61,13 +63,15 @@ export default function AdminLayout({
         ? 'Review and resolve reported questions'
         : activeSection === 'questions'
           ? 'Browse Firestore questions'
-          : activeSection === 'user-ideas'
-            ? 'Ideas (pending) vs. Added (shipped)'
-            : activeSection === 'experiments'
-              ? 'Paywall A/B tests (admin only)'
-              : activeSection === 'settings'
-                ? 'Remote config in Firestore'
-                : 'Filter users by onboarding and export CSV'
+          : activeSection === 'beginner-flow-reports'
+            ? 'Issues reported from the beginner learn flow'
+            : activeSection === 'user-ideas'
+              ? 'Ideas (pending) vs. Added (shipped)'
+              : activeSection === 'experiments'
+                ? 'Paywall A/B tests (admin only)'
+                : activeSection === 'settings'
+                  ? 'Remote config in Firestore'
+                  : 'Filter users by onboarding and export CSV'
 
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-900">

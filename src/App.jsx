@@ -10,6 +10,7 @@ import {
 import AdminLogin from './AdminLogin.jsx'
 import AdminLayout from './AdminLayout.jsx'
 import AudiencePage from './AudiencePage.jsx'
+import BeginnerFlowReportsPage from './BeginnerFlowReportsPage.jsx'
 import EditQuestionsPage from './EditQuestionsPage.jsx'
 import ExperimentsPage from './ExperimentsPage.jsx'
 import LessonReportsPage from './LessonReportsPage.jsx'
@@ -128,6 +129,8 @@ export default function App() {
         )
       ) : effectiveSection === 'lesson-reports' ? (
         <LessonReportsPage />
+      ) : effectiveSection === 'beginner-flow-reports' ? (
+        <BeginnerFlowReportsPage />
       ) : effectiveSection === 'user-ideas' ? (
         <UserIdeasPage />
       ) : effectiveSection === 'experiments' ? (

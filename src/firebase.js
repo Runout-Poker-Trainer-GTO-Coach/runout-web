@@ -42,6 +42,10 @@ export const lessonReportsCollectionName =
   import.meta.env.VITE_FIRESTORE_LESSON_REPORTS_COLLECTION?.trim() ||
   'lesson-reports'
 
+export const beginnerFlowReportsCollectionName =
+  import.meta.env.VITE_FIRESTORE_BEGINNER_FLOW_REPORTS_COLLECTION?.trim() ||
+  'learn-session-reports'
+
 export const userIdeasCollectionName =
   import.meta.env.VITE_FIRESTORE_USER_IDEAS_COLLECTION?.trim() || 'user-ideas'
 
