@@ -13,6 +13,7 @@ import AudiencePage from './AudiencePage.jsx'
 import BeginnerFlowReportsPage from './BeginnerFlowReportsPage.jsx'
 import EditQuestionsPage from './EditQuestionsPage.jsx'
 import ExperimentsPage from './ExperimentsPage.jsx'
+import GlossaryPage from './GlossaryPage.jsx'
 import LessonReportsPage from './LessonReportsPage.jsx'
 import QuestionsPage from './QuestionsPage.jsx'
 import SettingsPage from './SettingsPage.jsx'
@@ -133,6 +134,8 @@ export default function App() {
         <BeginnerFlowReportsPage />
       ) : effectiveSection === 'user-ideas' ? (
         <UserIdeasPage />
+      ) : effectiveSection === 'glossary' ? (
+        <GlossaryPage />
       ) : effectiveSection === 'experiments' ? (
         <ExperimentsPage />
       ) : effectiveSection === 'settings' ? (

@@ -1,4 +1,5 @@
 import {
+  BookMarked,
   BookOpen,
   ChevronRight,
   FlaskConical,
@@ -12,7 +13,7 @@ import {
 } from 'lucide-react'
 import { clearAdminSession } from './adminAuth'
 
-/** @typedef {'users' | 'questions' | 'lesson-reports' | 'beginner-flow-reports' | 'user-ideas' | 'experiments' | 'settings'} AdminSection */
+/** @typedef {'users' | 'questions' | 'lesson-reports' | 'beginner-flow-reports' | 'user-ideas' | 'glossary' | 'experiments' | 'settings'} AdminSection */
 
 /** @typedef {'full' | 'reports'} AdminAccess */
 
@@ -22,6 +23,7 @@ const navItemsAll = /** @type {const} */ ([
   { id: 'lesson-reports', label: 'Lesson reports', icon: BookOpen },
   { id: 'beginner-flow-reports', label: 'Beginner Flow Reports', icon: MessageSquareWarning },
   { id: 'user-ideas', label: 'User Ideas', icon: Sparkles },
+  { id: 'glossary', label: 'Glossary', icon: BookMarked },
   { id: 'experiments', label: 'Experiments', icon: FlaskConical },
   { id: 'settings', label: 'Settings', icon: Settings },
 ])
@@ -67,11 +69,13 @@ export default function AdminLayout({
             ? 'Issues reported from the beginner learn flow'
             : activeSection === 'user-ideas'
               ? 'Ideas (pending) vs. Added (shipped)'
-              : activeSection === 'experiments'
-                ? 'Paywall A/B tests (admin only)'
-                : activeSection === 'settings'
-                  ? 'Remote config in Firestore'
-                  : 'Filter users by onboarding and export CSV'
+              : activeSection === 'glossary'
+                ? 'Poker terms shown in the app'
+                : activeSection === 'experiments'
+                  ? 'Paywall A/B tests (admin only)'
+                  : activeSection === 'settings'
+                    ? 'Remote config in Firestore'
+                    : 'Filter users by onboarding and export CSV'
 
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-900">
