@@ -38,7 +38,7 @@ function rowMatchesQuery(row, q) {
   if (!q) return true
   const fields = [
     row.Term,
-    row['Basic Definition'],
+    row.Definition,
     row['Specific Situation'],
     row['Why It Matters'],
     row['Examples of Term Usage'],
@@ -48,6 +48,21 @@ function rowMatchesQuery(row, q) {
     if (String(f).toLowerCase().includes(q)) return true
   }
   return false
+}
+
+/**
+ * A handful of rows in the source sheet are section dividers (e.g. "Alias
+ * rows below:") that carry a Term but no body content at all — not real
+ * glossary entries. Filtered out rather than rendered as empty cards.
+ * @param {Record<string, unknown>} row
+ */
+function hasBody(row) {
+  return Boolean(
+    asStr(row.Definition).trim() ||
+      asStr(row['Specific Situation']).trim() ||
+      asStr(row['Why It Matters']).trim() ||
+      asStr(row['Examples of Term Usage']).trim(),
+  )
 }
 
 export default function GlossaryPage() {
@@ -88,10 +103,15 @@ export default function GlossaryPage() {
     }
   }, [])
 
+  // A handful of rows are section dividers from the source sheet (e.g.
+  // "Alias rows below:") with a Term but no body — not real entries.
+  const usableTerms = useMemo(() => terms.filter(hasBody), [terms])
+
   const displayTerms = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     return terms
       .map((t, index) => ({ term: t, index }))
+      .filter(({ term }) => hasBody(term))
       .filter(({ term }) => {
         if (importanceFilter === 'all') return true
         return importanceLevel(term.Importance) === Number(importanceFilter)
@@ -123,11 +143,11 @@ export default function GlossaryPage() {
               Glossary
             </h1>
             <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-600">
-              {terms.length > 0 ? (
+              {usableTerms.length > 0 ? (
                 <span className="inline-flex items-center gap-1.5">
                   <span className="inline-flex size-1.5 rounded-full bg-violet-500" />
                   {`${displayTerms.length} term${displayTerms.length === 1 ? '' : 's'} shown${
-                    hasActiveFilters ? ` of ${terms.length}` : ''
+                    hasActiveFilters ? ` of ${usableTerms.length}` : ''
                   }`}
                 </span>
               ) : !loading ? (
@@ -238,7 +258,7 @@ export default function GlossaryPage() {
 function GlossaryTermCard({ term, expanded, onToggle }) {
   const name = asStr(term.Term).trim()
   const stars = importanceLevel(term.Importance)
-  const basicDefinition = asStr(term['Basic Definition']).trim()
+  const definition = asStr(term.Definition).trim()
   const specificSituation = asStr(term['Specific Situation']).trim()
   const whyItMatters = asStr(term['Why It Matters']).trim()
   const examples = asStr(term['Examples of Term Usage']).trim()
@@ -279,7 +299,7 @@ function GlossaryTermCard({ term, expanded, onToggle }) {
           </div>
           {!expanded ? (
             <p className="mt-0.5 line-clamp-1 text-xs text-slate-500">
-              {basicDefinition || (
+              {definition || (
                 <span className="italic text-slate-400">
                   (no definition provided)
                 </span>
@@ -293,10 +313,10 @@ function GlossaryTermCard({ term, expanded, onToggle }) {
         <div className="space-y-3 border-t border-slate-100 bg-slate-50/60 px-4 py-3.5 sm:px-5">
           <div>
             <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-              Basic Definition
+              Definition
             </dt>
             <dd className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
-              {basicDefinition || (
+              {definition || (
                 <span className="italic text-slate-400">
                   (no definition provided)
                 </span>
