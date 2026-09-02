@@ -354,6 +354,8 @@ export default function EditQuestionsPage({ onShowTableView }) {
   const [insightsOpen, setInsightsOpen] = useState(false)
   // CSV upload overlay
   const [uploadOpen, setUploadOpen] = useState(false)
+  // Delete-by-id-prefix overlay
+  const [prefixDeleteOpen, setPrefixDeleteOpen] = useState(false)
 
   const [showShortcutsHint, setShowShortcutsHint] = useState(false)
 
@@ -526,9 +528,17 @@ export default function EditQuestionsPage({ onShowTableView }) {
         if (!savingEditor) setEditorState(null)
         return
       }
-      // ReportsModal / Insights / Upload manage their own Escape — defer
-      // to them so the parent doesn't also pop out of the Edit Questions view.
-      if (viewingReportsRow || insightsOpen || uploadOpen || previewingRow) return
+      // ReportsModal / Insights / Upload / Prefix delete manage their own
+      // Escape — defer to them so the parent doesn't also pop out of the
+      // Edit Questions view.
+      if (
+        viewingReportsRow ||
+        insightsOpen ||
+        uploadOpen ||
+        prefixDeleteOpen ||
+        previewingRow
+      )
+        return
       if (fieldsOpen) {
         setFieldsOpen(false)
         return
@@ -553,6 +563,7 @@ export default function EditQuestionsPage({ onShowTableView }) {
     previewingRow,
     insightsOpen,
     uploadOpen,
+    prefixDeleteOpen,
     fieldsOpen,
     selectMode,
     toggleSelectMode,
@@ -753,7 +764,8 @@ export default function EditQuestionsPage({ onShowTableView }) {
         previewingRow ||
         fieldsOpen ||
         insightsOpen ||
-        uploadOpen
+        uploadOpen ||
+        prefixDeleteOpen
       )
         return
       if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -787,6 +799,7 @@ export default function EditQuestionsPage({ onShowTableView }) {
     fieldsOpen,
     insightsOpen,
     uploadOpen,
+    prefixDeleteOpen,
     loading,
   ])
 
@@ -1294,6 +1307,19 @@ export default function EditQuestionsPage({ onShowTableView }) {
           </button>
           {selectMode ? null : (
             <>
+              <button
+                type="button"
+                onClick={() => setPrefixDeleteOpen(true)}
+                title="Delete questions by document id prefix, e.g. FH1..FH30"
+                className="inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"
+              >
+                <Trash2
+                  className="size-4 shrink-0"
+                  strokeWidth={2.25}
+                  aria-hidden
+                />
+                Delete by prefix
+              </button>
               <button
                 type="button"
                 onClick={() => setInsightsOpen(true)}
@@ -1921,6 +1947,25 @@ export default function EditQuestionsPage({ onShowTableView }) {
             if ('cashTourney' in patch) setCashTourneyFilter(patch.cashTourney)
             if ('liveOnline' in patch) setLiveOnlineFilter(patch.liveOnline)
             setInsightsOpen(false)
+          }}
+        />
+      ) : null}
+
+      {prefixDeleteOpen ? (
+        <PrefixDeleteModal
+          onClose={() => setPrefixDeleteOpen(false)}
+          onDeleted={(deletedIds) => {
+            const deletedSet = new Set(deletedIds)
+            startTransition(() => {
+              setRows((prev) =>
+                prev.filter((r) => !deletedSet.has(r.firestoreDocId)),
+              )
+            })
+            setToast({
+              tone: 'success',
+              message: `${deletedIds.length} question${deletedIds.length === 1 ? '' : 's'} deleted`,
+            })
+            setPrefixDeleteOpen(false)
           }}
         />
       ) : null}
@@ -3803,6 +3848,414 @@ function BulkDeleteConfirmationModal({ rows, busy, onCancel, onConfirm }) {
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* Delete by prefix                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Firestore's `in` operator caps at 30 values per query — chunk the id list
+ * and merge results. Any id with no matching doc is simply absent from the
+ * result; the caller reports that as "N of M exist" rather than an error.
+ * @param {import('firebase/firestore').Firestore} database
+ * @param {string[]} ids
+ * @returns {Promise<Array<{ firestoreDocId: string } & Record<string, unknown>>>}
+ */
+async function fetchQuestionsByIds(database, ids) {
+  const CHUNK = 30
+  /** @type {Array<{ firestoreDocId: string } & Record<string, unknown>>} */
+  const found = []
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK)
+    const snap = await getDocs(
+      query(
+        collection(db, questionsCollectionName),
+        where(documentId(), 'in', chunk),
+      ),
+    )
+    snap.forEach((d) => found.push(questionDocToRow(d.id, d.data())))
+  }
+  return found
+}
+
+/**
+ * Full-page modal: type a document-id prefix + count (e.g. "FH" + 30 looks
+ * up FH1..FH30), review which of those ids actually exist as an editable
+ * list — remove any you don't want touched — then soft-delete the rest.
+ * Same soft-delete contract as the mass-select flow: batched `.update()`
+ * writing only `isDeleted`/`updatedAt`, never the rest of the doc.
+ * @param {{
+ *   onClose: () => void
+ *   onDeleted: (deletedIds: string[]) => void
+ * }} props
+ */
+function PrefixDeleteModal({ onClose, onDeleted }) {
+  const [prefix, setPrefix] = useState('')
+  const [count, setCount] = useState('30')
+  const [lookupBusy, setLookupBusy] = useState(false)
+  const [lookupError, setLookupError] = useState(
+    /** @type {string | null} */ (null),
+  )
+  /** @type {[Array<{ firestoreDocId: string } & Record<string, unknown>> | null, (v: any) => void]} */
+  const [found, setFound] = useState(null)
+  const [requestedCount, setRequestedCount] = useState(0)
+  const [removedIds, setRemovedIds] = useState(
+    /** @type {Set<string>} */ (new Set()),
+  )
+  const [confirmTyped, setConfirmTyped] = useState('')
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState(
+    /** @type {string | null} */ (null),
+  )
+
+  const prefixInputRef = useRef(/** @type {HTMLInputElement | null} */ (null))
+
+  useEffect(() => {
+    prefixInputRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key !== 'Escape') return
+      if (deleteBusy || lookupBusy) return
+      onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, deleteBusy, lookupBusy])
+
+  const handleLookup = useCallback(async () => {
+    const trimmedPrefix = prefix.trim()
+    const n = Number.parseInt(count, 10)
+    if (!trimmedPrefix) {
+      setLookupError('Enter a prefix')
+      return
+    }
+    if (!Number.isFinite(n) || n < 1) {
+      setLookupError('Enter a count of 1 or more')
+      return
+    }
+    if (!db) {
+      setLookupError('Firestore is not configured')
+      return
+    }
+
+    setLookupBusy(true)
+    setLookupError(null)
+    setFound(null)
+    setRemovedIds(new Set())
+    setConfirmTyped('')
+
+    try {
+      const ids = Array.from({ length: n }, (_, i) => `${trimmedPrefix}${i + 1}`)
+      const rowsFound = await fetchQuestionsByIds(db, ids).then((list) =>
+        list.filter((r) => !isDeletedQuestionRow(r)),
+      )
+      // Preserve FH1, FH2, ... order rather than whatever order Firestore
+      // returned them in.
+      const order = new Map(ids.map((id, i) => [id, i]))
+      rowsFound.sort(
+        (a, b) =>
+          (order.get(a.firestoreDocId) ?? 0) -
+          (order.get(b.firestoreDocId) ?? 0),
+      )
+      setRequestedCount(n)
+      setFound(rowsFound)
+    } catch (e) {
+      setLookupError(e?.message || 'Failed to look up questions')
+    } finally {
+      setLookupBusy(false)
+    }
+  }, [prefix, count])
+
+  const remaining = useMemo(
+    () => (found ?? []).filter((r) => !removedIds.has(r.firestoreDocId)),
+    [found, removedIds],
+  )
+  const confirmToken = String(remaining.length)
+  const confirmMatches = confirmTyped.trim() === confirmToken
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!db || remaining.length === 0 || !confirmMatches) return
+    setDeleteBusy(true)
+    setDeleteError(null)
+
+    const ids = remaining.map((r) => r.firestoreDocId)
+
+    try {
+      // Same soft-delete contract as handleConfirmBulkDelete — only the
+      // deletion markers, via a merge-style batch update.
+      const MAX_BATCH = 500
+      for (let i = 0; i < ids.length; i += MAX_BATCH) {
+        const chunk = ids.slice(i, i + MAX_BATCH)
+        const batch = writeBatch(db)
+        for (const id of chunk) {
+          batch.update(doc(db, questionsCollectionName, id), {
+            isDeleted: true,
+            updatedAt: serverTimestamp(),
+          })
+        }
+        await batch.commit()
+      }
+      onDeleted(ids)
+    } catch (e) {
+      setDeleteError(e?.message || 'Failed to delete questions')
+      setDeleteBusy(false)
+    }
+  }, [remaining, confirmMatches, onDeleted])
+
+  const busy = lookupBusy || deleteBusy
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col bg-slate-50">
+      <header className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-rose-500 to-rose-700 text-white shadow-md shadow-rose-900/25">
+            <Trash2 className="size-5" strokeWidth={2.25} aria-hidden />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">
+              Delete questions by id prefix
+            </h2>
+            <p className="text-[11px] text-slate-500">
+              Looks up document ids like PREFIX1, PREFIX2, … up to the count
+              you set.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={busy}
+          className="shrink-0 cursor-pointer rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label="Close"
+        >
+          <X className="size-5" strokeWidth={2} />
+        </button>
+      </header>
+
+      <main className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 lg:py-8">
+          <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end sm:gap-4">
+            <label className="flex-1 text-xs font-semibold text-slate-700">
+              Prefix
+              <input
+                ref={prefixInputRef}
+                type="text"
+                value={prefix}
+                onChange={(e) => setPrefix(e.target.value)}
+                disabled={busy}
+                placeholder="e.g. FH"
+                autoComplete="off"
+                className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 shadow-sm outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !busy) handleLookup()
+                }}
+              />
+            </label>
+            <label className="w-full text-xs font-semibold text-slate-700 sm:w-32">
+              Count
+              <input
+                type="number"
+                min={1}
+                inputMode="numeric"
+                value={count}
+                onChange={(e) => setCount(e.target.value)}
+                disabled={busy}
+                className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-right font-mono text-sm text-slate-900 shadow-sm outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !busy) handleLookup()
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={handleLookup}
+              disabled={busy}
+              className="inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-gradient-to-b from-slate-800 to-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:from-slate-900 hover:to-black focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {lookupBusy ? (
+                <Loader2
+                  className="size-4 shrink-0 animate-spin"
+                  strokeWidth={2}
+                  aria-hidden
+                />
+              ) : (
+                <Search className="size-4 shrink-0" strokeWidth={2.25} aria-hidden />
+              )}
+              Look up
+            </button>
+          </div>
+
+          {lookupError ? (
+            <div className="mt-3 flex gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+              <AlertCircle
+                className="mt-0.5 size-4 shrink-0 text-red-600"
+                strokeWidth={2}
+              />
+              <span>{lookupError}</span>
+            </div>
+          ) : null}
+
+          {found ? (
+            <div className="mt-6">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-slate-800">
+                  {found.length} of {requestedCount} exist
+                  {removedIds.size > 0
+                    ? ` · ${remaining.length} kept for deletion`
+                    : ''}
+                </p>
+              </div>
+
+              {found.length === 0 ? (
+                <div className="mt-3 flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-200 bg-white py-16 text-center">
+                  <SearchX className="size-8 text-slate-300" strokeWidth={1.5} aria-hidden />
+                  <p className="text-sm font-medium text-slate-600">
+                    None of those ids exist.
+                  </p>
+                </div>
+              ) : (
+                <ul className="mt-3 divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  {found.map((r) => {
+                    const removed = removedIds.has(r.firestoreDocId)
+                    const text = questionPreviewText(r) || '(no question text)'
+                    return (
+                      <li
+                        key={r.firestoreDocId}
+                        className={`flex items-start gap-3 px-4 py-3 transition ${
+                          removed ? 'bg-slate-50/80 opacity-60' : ''
+                        }`}
+                      >
+                        <span className="mt-0.5 shrink-0 rounded-full bg-rose-50 px-2 py-0.5 font-mono text-[11px] font-bold text-rose-800 ring-1 ring-rose-100">
+                          {r.firestoreDocId}
+                        </span>
+                        <span
+                          className={`line-clamp-1 flex-1 break-words text-sm ${
+                            removed
+                              ? 'text-slate-400 line-through'
+                              : 'text-slate-700'
+                          }`}
+                        >
+                          {text}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRemovedIds((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(r.firestoreDocId)) {
+                                next.delete(r.firestoreDocId)
+                              } else {
+                                next.add(r.firestoreDocId)
+                              }
+                              return next
+                            })
+                          }
+                          disabled={deleteBusy}
+                          className="shrink-0 cursor-pointer rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {removed ? 'Keep' : 'Remove'}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+
+              {found.length > 0 ? (
+                <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50/60 p-4">
+                  {remaining.length === 0 ? (
+                    <p className="text-sm text-rose-900">
+                      Every question has been removed from this list —
+                      nothing left to delete.
+                    </p>
+                  ) : (
+                    <>
+                      <label
+                        htmlFor="prefix-delete-confirm-input"
+                        className="block text-xs font-semibold text-rose-900"
+                      >
+                        To delete these {remaining.length} question
+                        {remaining.length === 1 ? '' : 's'}, type{' '}
+                        <code className="rounded bg-rose-100 px-1.5 py-0.5 font-mono text-[11px] font-bold text-rose-800">
+                          {confirmToken}
+                        </code>{' '}
+                        below:
+                      </label>
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <input
+                          id="prefix-delete-confirm-input"
+                          type="text"
+                          autoComplete="off"
+                          inputMode="numeric"
+                          value={confirmTyped}
+                          onChange={(e) => setConfirmTyped(e.target.value)}
+                          disabled={deleteBusy}
+                          placeholder={confirmToken}
+                          className={`flex-1 rounded-lg border bg-white px-3 py-2 font-mono text-sm shadow-sm outline-none transition placeholder:text-slate-400 focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60 ${
+                            confirmTyped.length === 0
+                              ? 'border-rose-200 focus:border-rose-400 focus:ring-rose-500/15'
+                              : confirmMatches
+                                ? 'border-emerald-300 bg-emerald-50/50 focus:border-emerald-400 focus:ring-emerald-500/20'
+                                : 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/20'
+                          }`}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && confirmMatches && !deleteBusy) {
+                              handleConfirmDelete()
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleConfirmDelete}
+                          disabled={!confirmMatches || deleteBusy}
+                          className="inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-gradient-to-b from-rose-600 to-rose-700 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-rose-900/25 transition hover:from-rose-700 hover:to-rose-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {deleteBusy ? (
+                            <>
+                              <Loader2
+                                className="size-4 animate-spin"
+                                strokeWidth={2}
+                                aria-hidden
+                              />
+                              Deleting…
+                            </>
+                          ) : (
+                            <>
+                              <Trash2
+                                className="size-4 shrink-0"
+                                strokeWidth={2.25}
+                                aria-hidden
+                              />
+                              Delete {remaining.length}
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <p className="mt-1.5 text-[11px] text-rose-800/80">
+                        This action <span className="font-semibold">cannot be undone</span>.
+                      </p>
+                    </>
+                  )}
+                  {deleteError ? (
+                    <div className="mt-2 flex gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                      <AlertCircle
+                        className="mt-0.5 size-3.5 shrink-0 text-red-600"
+                        strokeWidth={2}
+                      />
+                      <span>{deleteError}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </main>
     </div>
   )
 }
