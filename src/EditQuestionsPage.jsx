@@ -3929,13 +3929,11 @@ function PrefixDeleteModal({ onClose, onDeleted }) {
   }, [onClose, deleteBusy, lookupBusy])
 
   const handleLookup = useCallback(async () => {
+    // Prefix is optional — an empty prefix looks up bare numeric ids
+    // ("10", "11", ...) instead of a lettered series ("FH10", "FH11", ...).
     const trimmedPrefix = prefix.trim()
     const start = Number.parseInt(startNum, 10)
     const end = Number.parseInt(endNum, 10)
-    if (!trimmedPrefix) {
-      setLookupError('Enter a prefix')
-      return
-    }
     if (!Number.isFinite(start) || start < 1) {
       setLookupError('Start must be 1 or more')
       return
@@ -4033,7 +4031,8 @@ function PrefixDeleteModal({ onClose, onDeleted }) {
             </h2>
             <p className="text-[11px] text-slate-500">
               Looks up document ids like PREFIX{'{start}'}..PREFIX{'{end}'} —
-              e.g. FH10..FH40.
+              e.g. FH10..FH40. Leave prefix blank to look up bare numeric
+              ids instead, e.g. 10..40.
             </p>
           </div>
         </div>
@@ -4052,14 +4051,14 @@ function PrefixDeleteModal({ onClose, onDeleted }) {
         <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 lg:py-8">
           <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end sm:gap-4">
             <label className="flex-1 text-xs font-semibold text-slate-700">
-              Prefix
+              Prefix (optional)
               <input
                 ref={prefixInputRef}
                 type="text"
                 value={prefix}
                 onChange={(e) => setPrefix(e.target.value)}
                 disabled={busy}
-                placeholder="e.g. FH"
+                placeholder="e.g. FH — leave blank for bare numeric ids"
                 autoComplete="off"
                 className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 shadow-sm outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
                 onKeyDown={(e) => {
