@@ -1310,7 +1310,7 @@ export default function EditQuestionsPage({ onShowTableView }) {
               <button
                 type="button"
                 onClick={() => setPrefixDeleteOpen(true)}
-                title="Delete questions by document id prefix, e.g. FH1..FH30"
+                title="Delete questions by document id prefix, e.g. FH10..FH40"
                 className="inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"
               >
                 <Trash2
@@ -3894,7 +3894,8 @@ async function fetchQuestionsByIds(database, ids) {
  */
 function PrefixDeleteModal({ onClose, onDeleted }) {
   const [prefix, setPrefix] = useState('')
-  const [count, setCount] = useState('30')
+  const [startNum, setStartNum] = useState('1')
+  const [endNum, setEndNum] = useState('30')
   const [lookupBusy, setLookupBusy] = useState(false)
   const [lookupError, setLookupError] = useState(
     /** @type {string | null} */ (null),
@@ -3929,13 +3930,22 @@ function PrefixDeleteModal({ onClose, onDeleted }) {
 
   const handleLookup = useCallback(async () => {
     const trimmedPrefix = prefix.trim()
-    const n = Number.parseInt(count, 10)
+    const start = Number.parseInt(startNum, 10)
+    const end = Number.parseInt(endNum, 10)
     if (!trimmedPrefix) {
       setLookupError('Enter a prefix')
       return
     }
-    if (!Number.isFinite(n) || n < 1) {
-      setLookupError('Enter a count of 1 or more')
+    if (!Number.isFinite(start) || start < 1) {
+      setLookupError('Start must be 1 or more')
+      return
+    }
+    if (!Number.isFinite(end) || end < 1) {
+      setLookupError('End must be 1 or more')
+      return
+    }
+    if (start > end) {
+      setLookupError('Start must be less than or equal to end')
       return
     }
     if (!db) {
@@ -3950,12 +3960,13 @@ function PrefixDeleteModal({ onClose, onDeleted }) {
     setConfirmTyped('')
 
     try {
-      const ids = Array.from({ length: n }, (_, i) => `${trimmedPrefix}${i + 1}`)
+      const n = end - start + 1
+      const ids = Array.from({ length: n }, (_, i) => `${trimmedPrefix}${start + i}`)
       const rowsFound = await fetchQuestionsByIds(db, ids).then((list) =>
         list.filter((r) => !isDeletedQuestionRow(r)),
       )
-      // Preserve FH1, FH2, ... order rather than whatever order Firestore
-      // returned them in.
+      // Preserve FH{start}, FH{start+1}, ... order rather than whatever
+      // order Firestore returned them in.
       const order = new Map(ids.map((id, i) => [id, i]))
       rowsFound.sort(
         (a, b) =>
@@ -3969,7 +3980,7 @@ function PrefixDeleteModal({ onClose, onDeleted }) {
     } finally {
       setLookupBusy(false)
     }
-  }, [prefix, count])
+  }, [prefix, startNum, endNum])
 
   const remaining = useMemo(
     () => (found ?? []).filter((r) => !removedIds.has(r.firestoreDocId)),
@@ -4021,8 +4032,8 @@ function PrefixDeleteModal({ onClose, onDeleted }) {
               Delete questions by id prefix
             </h2>
             <p className="text-[11px] text-slate-500">
-              Looks up document ids like PREFIX1, PREFIX2, … up to the count
-              you set.
+              Looks up document ids like PREFIX{'{start}'}..PREFIX{'{end}'} —
+              e.g. FH10..FH40.
             </p>
           </div>
         </div>
@@ -4056,14 +4067,29 @@ function PrefixDeleteModal({ onClose, onDeleted }) {
                 }}
               />
             </label>
-            <label className="w-full text-xs font-semibold text-slate-700 sm:w-32">
-              Count
+            <label className="w-full text-xs font-semibold text-slate-700 sm:w-24">
+              Start
               <input
                 type="number"
                 min={1}
                 inputMode="numeric"
-                value={count}
-                onChange={(e) => setCount(e.target.value)}
+                value={startNum}
+                onChange={(e) => setStartNum(e.target.value)}
+                disabled={busy}
+                className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-right font-mono text-sm text-slate-900 shadow-sm outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !busy) handleLookup()
+                }}
+              />
+            </label>
+            <label className="w-full text-xs font-semibold text-slate-700 sm:w-24">
+              End
+              <input
+                type="number"
+                min={1}
+                inputMode="numeric"
+                value={endNum}
+                onChange={(e) => setEndNum(e.target.value)}
                 disabled={busy}
                 className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-right font-mono text-sm text-slate-900 shadow-sm outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60"
                 onKeyDown={(e) => {
