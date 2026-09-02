@@ -25,6 +25,10 @@ export async function publishGlossaryToR2(entries, creds) {
   const client = new S3Client({
     region: 'auto',
     endpoint: `https://${creds.accountId}.r2.cloudflarestorage.com`,
+    // Without this, the SDK defaults to virtual-hosted-style addressing
+    // (bucket.accountId.r2.cloudflarestorage.com), which R2's CORS rules
+    // don't match the same way — path-style is what R2 actually expects.
+    forcePathStyle: true,
     credentials: {
       accessKeyId: creds.accessKeyId,
       secretAccessKey: creds.secretAccessKey,

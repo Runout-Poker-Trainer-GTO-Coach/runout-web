@@ -19,6 +19,12 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { doc, increment, serverTimestamp, updateDoc } from 'firebase/firestore'
+import {
+  db,
+  settingsCollectionName,
+  settingsDocumentId,
+} from './firebase'
 import { csvToGlossaryEntries, diffGlossaryEntries } from './glossaryCsv.js'
 import { publishGlossaryToR2 } from './glossaryR2.js'
 
@@ -71,22 +77,22 @@ function rowMatchesQuery(row, q) {
 function hasBody(row) {
   return Boolean(
     asStr(row.Definition).trim() ||
-      asStr(row['Specific Situation']).trim() ||
-      asStr(row['Why It Matters']).trim() ||
-      asStr(row['Examples of Term Usage']).trim(),
+    asStr(row['Specific Situation']).trim() ||
+    asStr(row['Why It Matters']).trim() ||
+    asStr(row['Examples of Term Usage']).trim(),
   )
 }
 
 export default function GlossaryPage() {
   const [terms, setTerms] = useState(
-    /** @type {Array<Record<string, unknown>>} */ ([]),
+    /** @type {Array<Record<string, unknown>>} */([]),
   )
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(/** @type {string | null} */ (null))
+  const [error, setError] = useState(/** @type {string | null} */(null))
   const [searchQuery, setSearchQuery] = useState('')
   const [importanceFilter, setImportanceFilter] = useState('all')
   const [expandedIndex, setExpandedIndex] = useState(
-    /** @type {number | null} */ (null),
+    /** @type {number | null} */(null),
   )
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
 
@@ -100,7 +106,11 @@ export default function GlossaryPage() {
   // stay directly visible in the effect/handler that makes them.
   const loadGlossary = useCallback(() => {
     const requestId = ++loadRequestId.current
-    return fetch(GLOSSARY_URL)
+    // no-store: the browser's default HTTP cache was serving stale content
+    // after a publish — a plain fetch() could return an old cached copy
+    // even after a full page reload, while curl/cache:'no-store' saw the
+    // real current file.
+    return fetch(GLOSSARY_URL, { cache: 'no-store' })
       .then((res) => {
         if (!res.ok) throw new Error(`Glossary request returned ${res.status}`)
         return res.json()
@@ -168,9 +178,8 @@ export default function GlossaryPage() {
               {usableTerms.length > 0 ? (
                 <span className="inline-flex items-center gap-1.5">
                   <span className="inline-flex size-1.5 rounded-full bg-violet-500" />
-                  {`${displayTerms.length} term${displayTerms.length === 1 ? '' : 's'} shown${
-                    hasActiveFilters ? ` of ${usableTerms.length}` : ''
-                  }`}
+                  {`${displayTerms.length} term${displayTerms.length === 1 ? '' : 's'} shown${hasActiveFilters ? ` of ${usableTerms.length}` : ''
+                    }`}
                 </span>
               ) : !loading ? (
                 <span>Poker terms shown in the app</span>
@@ -315,9 +324,8 @@ function GlossaryTermCard({ term, expanded, onToggle }) {
         className="flex w-full cursor-pointer items-start gap-3 px-4 py-3.5 text-left transition hover:bg-slate-50/80 focus:outline-none focus-visible:bg-violet-50/60 sm:items-center"
       >
         <ChevronDown
-          className={`mt-0.5 size-4 shrink-0 text-slate-400 transition-transform sm:mt-0 ${
-            expanded ? 'rotate-180' : ''
-          }`}
+          className={`mt-0.5 size-4 shrink-0 text-slate-400 transition-transform sm:mt-0 ${expanded ? 'rotate-180' : ''
+            }`}
           strokeWidth={2.25}
           aria-hidden
         />
@@ -440,22 +448,22 @@ function readSessionCreds() {
  */
 function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
   const [step, setStep] = useState(
-    /** @type {'pick' | 'preview' | 'credentials' | 'publishing' | 'done'} */ (
+    /** @type {'pick' | 'preview' | 'credentials' | 'publishing' | 'done'} */(
       'pick'
     ),
   )
   const [fileName, setFileName] = useState('')
   const [parseError, setParseError] = useState(
-    /** @type {string | null} */ (null),
+    /** @type {string | null} */(null),
   )
   const [parsedEntries, setParsedEntries] = useState(
-    /** @type {Array<Record<string, string>> | null} */ (null),
+    /** @type {Array<Record<string, string>> | null} */(null),
   )
   const [droppedRows, setDroppedRows] = useState(
-    /** @type {Array<{ line: number, reason: string }>} */ ([]),
+    /** @type {Array<{ line: number, reason: string }>} */([]),
   )
   const [unmappedHeaders, setUnmappedHeaders] = useState(
-    /** @type {string[]} */ ([]),
+    /** @type {string[]} */([]),
   )
   const [showDropped, setShowDropped] = useState(false)
   const [showChanged, setShowChanged] = useState(false)
@@ -478,10 +486,16 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
   const [showSecret, setShowSecret] = useState(false)
   const [rememberForSession, setRememberForSession] = useState(true)
   const [publishError, setPublishError] = useState(
+    /** @type {string | null} */(null),
+  )
+  // Non-blocking — the R2 write already succeeded by the time this can
+  // fail, so it's surfaced as a warning on the success screen, not an error
+  // that reverts the flow back to the credentials step.
+  const [syncVersionWarning, setSyncVersionWarning] = useState(
     /** @type {string | null} */ (null),
   )
 
-  const fileInputRef = useRef(/** @type {HTMLInputElement | null} */ (null))
+  const fileInputRef = useRef(/** @type {HTMLInputElement | null} */(null))
 
   useEffect(() => {
     function onKey(e) {
@@ -531,26 +545,41 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
   const handlePublish = useCallback(async () => {
     if (!parsedEntries) return
     setPublishError(null)
+    setSyncVersionWarning(null)
     setStep('publishing')
 
-    const creds = { accountId, accessKeyId, secretAccessKey, bucketName }
-
-    if (rememberForSession) {
-      try {
-        sessionStorage.setItem(R2_CREDS_SESSION_KEY, JSON.stringify(creds))
-      } catch {
-        /* private mode / quota — not critical, just skip remembering */
-      }
-    } else {
-      try {
-        sessionStorage.removeItem(R2_CREDS_SESSION_KEY)
-      } catch {
-        /* ignore */
-      }
+    const creds = {
+      accountId: import.meta.env.VITE_R2_ACCOUNT_ID,
+      accessKeyId: import.meta.env.VITE_R2_ACCESS_KEY_ID,
+      secretAccessKey: import.meta.env.VITE_R2_SECRET_ACCESS_KEY,
+      bucketName: import.meta.env.VITE_R2_BUCKET_NAME
     }
+    console.log(creds)
 
     try {
       await publishGlossaryToR2(parsedEntries, creds)
+      // R2 write succeeded — this is the primary action. Bumping
+      // glossarySyncVersion lets the app detect a new glossary is
+      // available; if this fails, the publish itself still succeeded, so
+      // it's a warning on the done screen, not a reason to treat the
+      // whole publish as failed.
+      if (db) {
+        try {
+          await updateDoc(doc(db, settingsCollectionName, settingsDocumentId), {
+            glossarySyncVersion: increment(1),
+            updatedAt: serverTimestamp(),
+          })
+        } catch (e) {
+          setSyncVersionWarning(
+            e?.message ||
+              'Published to R2, but failed to bump glossarySyncVersion',
+          )
+        }
+      } else {
+        setSyncVersionWarning(
+          'Published to R2, but Firestore is not configured — glossarySyncVersion was not bumped',
+        )
+      }
       setStep('done')
     } catch (e) {
       setPublishError(e?.message || 'Failed to publish to R2')
@@ -782,113 +811,6 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
             </div>
           ) : null}
 
-          {step === 'credentials' || step === 'publishing' ? (
-            <div className="flex flex-col gap-4">
-              <div className="flex gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900">
-                <AlertTriangle
-                  className="mt-0.5 size-4 shrink-0 text-amber-600"
-                  strokeWidth={2}
-                />
-                <span>
-                  This key is used only in your browser to publish directly to
-                  R2 — it's never saved to a file or sent anywhere else. It
-                  stays readable in this tab (e.g. via devtools) until you
-                  close it, and if "Remember" is checked it's kept in{' '}
-                  <code className="rounded bg-amber-100 px-1 py-0.5 font-mono">
-                    sessionStorage
-                  </code>{' '}
-                  (cleared when the tab closes) — never{' '}
-                  <code className="rounded bg-amber-100 px-1 py-0.5 font-mono">
-                    localStorage
-                  </code>
-                  .
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
-                  Account ID
-                  <input
-                    type="text"
-                    value={accountId}
-                    onChange={(e) => setAccountId(e.target.value)}
-                    disabled={step === 'publishing'}
-                    placeholder="e.g. ad4a08d632945ce0df5897357b7e9869"
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-normal text-slate-900 shadow-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60"
-                  />
-                </label>
-                <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
-                  Bucket name
-                  <input
-                    type="text"
-                    value={bucketName}
-                    onChange={(e) => setBucketName(e.target.value)}
-                    disabled={step === 'publishing'}
-                    placeholder="e.g. runout"
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-normal text-slate-900 shadow-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60"
-                  />
-                </label>
-                <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
-                  Access key ID
-                  <input
-                    type="text"
-                    value={accessKeyId}
-                    onChange={(e) => setAccessKeyId(e.target.value)}
-                    disabled={step === 'publishing'}
-                    autoComplete="off"
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-normal text-slate-900 shadow-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60"
-                  />
-                </label>
-                <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
-                  Secret access key
-                  <div className="relative">
-                    <input
-                      type={showSecret ? 'text' : 'password'}
-                      value={secretAccessKey}
-                      onChange={(e) => setSecretAccessKey(e.target.value)}
-                      disabled={step === 'publishing'}
-                      autoComplete="off"
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 pr-9 text-sm font-normal text-slate-900 shadow-sm outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowSecret((v) => !v)}
-                      tabIndex={-1}
-                      aria-label={showSecret ? 'Hide secret' : 'Show secret'}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-slate-400 hover:text-slate-600"
-                    >
-                      {showSecret ? (
-                        <EyeOff className="size-4" strokeWidth={2} aria-hidden />
-                      ) : (
-                        <Eye className="size-4" strokeWidth={2} aria-hidden />
-                      )}
-                    </button>
-                  </div>
-                </label>
-              </div>
-
-              <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
-                <input
-                  type="checkbox"
-                  checked={rememberForSession}
-                  onChange={(e) => setRememberForSession(e.target.checked)}
-                  disabled={step === 'publishing'}
-                  className="size-3.5 rounded border-slate-300"
-                />
-                Remember for this browser tab session
-              </label>
-
-              {publishError ? (
-                <div className="flex gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                  <AlertCircle
-                    className="mt-0.5 size-4 shrink-0 text-red-600"
-                    strokeWidth={2}
-                  />
-                  <span>{publishError}</span>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
 
           {step === 'done' ? (
             <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
@@ -903,6 +825,19 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
                 closes. It may take a short while for Cloudflare's cache and
                 the app to pick up the new file everywhere.
               </p>
+              {syncVersionWarning ? (
+                <div className="mt-1 flex max-w-sm gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-left text-xs text-amber-900">
+                  <AlertTriangle
+                    className="mt-0.5 size-3.5 shrink-0 text-amber-600"
+                    strokeWidth={2}
+                  />
+                  <span>{syncVersionWarning}</span>
+                </div>
+              ) : (
+                <p className="text-[11px] text-emerald-700">
+                  glossarySyncVersion bumped in Firestore.
+                </p>
+              )}
             </div>
           ) : null}
         </div>
@@ -932,24 +867,13 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setStep('credentials')}
-                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-violet-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-1"
+                  onClick={handlePublish}
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-violet-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Continue to publish
+                  <Upload className="size-3.5 shrink-0" strokeWidth={2.25} aria-hidden />
+                  Publish to R2
                 </button>
               </>
-            ) : null}
-
-            {step === 'credentials' ? (
-              <button
-                type="button"
-                onClick={handlePublish}
-                disabled={!credsComplete}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-violet-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Upload className="size-3.5 shrink-0" strokeWidth={2.25} aria-hidden />
-                Publish to R2
-              </button>
             ) : null}
 
             {step === 'publishing' ? (
