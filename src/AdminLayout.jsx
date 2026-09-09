@@ -1,4 +1,5 @@
 import {
+  BarChart3,
   BookMarked,
   BookOpen,
   ChevronRight,
@@ -13,7 +14,7 @@ import {
 } from 'lucide-react'
 import { clearAdminSession } from './adminAuth'
 
-/** @typedef {'users' | 'questions' | 'lesson-reports' | 'beginner-flow-reports' | 'user-ideas' | 'glossary' | 'experiments' | 'settings'} AdminSection */
+/** @typedef {'users' | 'questions' | 'lesson-reports' | 'beginner-flow-reports' | 'user-ideas' | 'glossary' | 'experiments' | 'experiment-results' | 'settings'} AdminSection */
 
 /** @typedef {'full' | 'reports'} AdminAccess */
 
@@ -25,6 +26,7 @@ const navItemsAll = /** @type {const} */ ([
   { id: 'user-ideas', label: 'User Ideas', icon: Sparkles },
   { id: 'glossary', label: 'Glossary', icon: BookMarked },
   { id: 'experiments', label: 'Experiments', icon: FlaskConical },
+  { id: 'experiment-results', label: 'Experiment Results', icon: BarChart3 },
   { id: 'settings', label: 'Settings', icon: Settings },
 ])
 
@@ -73,9 +75,11 @@ export default function AdminLayout({
                 ? 'Poker terms shown in the app'
                 : activeSection === 'experiments'
                   ? 'Paywall A/B tests (admin only)'
-                  : activeSection === 'settings'
-                    ? 'Remote config in Firestore'
-                    : 'Filter users by onboarding and export CSV'
+                  : activeSection === 'experiment-results'
+                    ? 'Live A/B results from Mixpanel'
+                    : activeSection === 'settings'
+                      ? 'Remote config in Firestore'
+                      : 'Filter users by onboarding and export CSV'
 
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-900">

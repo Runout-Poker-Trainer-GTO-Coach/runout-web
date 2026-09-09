@@ -12,6 +12,7 @@ import AdminLayout from './AdminLayout.jsx'
 import AudiencePage from './AudiencePage.jsx'
 import BeginnerFlowReportsPage from './BeginnerFlowReportsPage.jsx'
 import EditQuestionsPage from './EditQuestionsPage.jsx'
+import ExperimentResultsPage from './ExperimentResultsPage.jsx'
 import ExperimentsPage from './ExperimentsPage.jsx'
 import GlossaryPage from './GlossaryPage.jsx'
 import LessonReportsPage from './LessonReportsPage.jsx'
@@ -138,6 +139,8 @@ export default function App() {
         <GlossaryPage />
       ) : effectiveSection === 'experiments' ? (
         <ExperimentsPage />
+      ) : effectiveSection === 'experiment-results' ? (
+        <ExperimentResultsPage />
       ) : effectiveSection === 'settings' ? (
         <SettingsPage />
       ) : (
