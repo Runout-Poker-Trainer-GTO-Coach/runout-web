@@ -20,6 +20,13 @@ serviceAccountKey.json
 *-firebase-adminsdk-*.json
 firebase-adminsdk*.json
 
+# R2 (Cloudflare) credentials dumped locally for the glossary tooling —
+# contains a live secret access key, never commit.
+r2.json
+
+# Local glossary data snapshots pulled for inspection — not source.
+pokerGlossary.v2.en.json
+
 # Local Claude Code settings (machine-specific permissions/paths) — not shared.
 .claude/
 

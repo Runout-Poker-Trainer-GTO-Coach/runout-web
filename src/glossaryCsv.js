@@ -76,77 +76,86 @@ export function parseCsv(text) {
 }
 
 /**
- * The keys GlossaryPage.jsx (and the deployed R2 JSON) expect. The source
- * CSV's header names are mapped onto these — see `HEADER_ALIASES` below,
- * since the sheet's export has used slightly different header text at
- * different times ("Examples Usage" vs "Examples of Term Usage").
+ * Fully dynamic — no hardcoded header names. Whatever the CSV's own header
+ * row says becomes the JSON field name, verbatim (trimmed), for every
+ * column. This means a sheet re-shape (rename a column, add one, remove
+ * one) never breaks parsing — there is nothing here for a new header name
+ * to fail to match. The one exception: `Term` is treated as the entry's
+ * lookup key everywhere downstream (this page's search/dedupe, the mobile
+ * app's getGlossaryEntryByTerm) — see `deriveGlossaryTitles` for the
+ * title/description/other role assignment used to publish
+ * config/app.glossaryTitles alongside this data.
+ * @param {string[]} headerRow already-trimmed header cells
+ * @returns {string[]} the non-blank header cells, in column order
  */
-export const GLOSSARY_JSON_FIELDS = [
-  'Term',
-  'Importance',
-  'Definition',
-  'Specific Situation',
-  'Why It Matters',
-  'Examples of Term Usage',
-]
-
-/** Maps a CSV header cell (trimmed) to its canonical JSON field name. */
-const HEADER_ALIASES = {
-  term: 'Term',
-  importance: 'Importance',
-  definition: 'Definition',
-  'basic definition': 'Definition',
-  'specific situation': 'Specific Situation',
-  'why it matters': 'Why It Matters',
-  'examples usage': 'Examples of Term Usage',
-  'examples of term usage': 'Examples of Term Usage',
+function realFieldNames(headerRow) {
+  return headerRow.filter((h) => h.trim() !== '')
 }
 
 /**
- * A row counts as a real glossary entry only if it has a Term and at least
- * one body field populated. The source sheet has occasionally included
- * blank section-divider rows (e.g. "Alias rows below:") that carry a Term
- * but no content — those are dropped, not published.
+ * A row counts as a real glossary entry only if its first column (the
+ * title/Term field) is non-empty AND at least one other column has
+ * content. The source sheet has occasionally included blank
+ * section-divider rows (e.g. "Alias rows below:") that carry a title but
+ * no content — those are dropped, not published.
  * @param {Record<string, string>} entry
+ * @param {string[]} fieldNames column names in order — fieldNames[0] is the title field
  */
-function isRealEntry(entry) {
-  if (!entry.Term?.trim()) return false
-  return Boolean(
-    entry.Definition?.trim() ||
-      entry['Specific Situation']?.trim() ||
-      entry['Why It Matters']?.trim() ||
-      entry['Examples of Term Usage']?.trim(),
-  )
+function isRealEntry(entry, fieldNames) {
+  const titleField = fieldNames[0]
+  if (!titleField || !entry[titleField]?.trim()) return false
+  return fieldNames
+    .slice(1)
+    .some((field) => entry[field]?.trim())
+}
+
+/**
+ * Column-position role assignment, published to config/app.glossaryTitles
+ * so the mobile app knows which JSON key is the title, which is the
+ * description, and what the remaining "other" fields are called — without
+ * either side hardcoding field names. Column 1 = title, column 2 =
+ * description, everything after = other.
+ * @param {string[]} fieldNames real (non-blank) header names, in column order
+ * @returns {{ titleKey: string | null, descriptionKey: string | null, otherKeys: string[] }}
+ */
+export function deriveGlossaryTitles(fieldNames) {
+  return {
+    titleKey: fieldNames[0] ?? null,
+    descriptionKey: fieldNames[1] ?? null,
+    otherKeys: fieldNames.slice(2),
+  }
 }
 
 /**
  * @typedef {{
  *   entries: Array<Record<string, string>>
  *   droppedRows: Array<{ line: number, reason: string }>
- *   unmappedHeaders: string[]
+ *   headerRow: string[]
+ *   fieldNames: string[]
  * }} GlossaryCsvResult
  */
 
 /**
  * Parses the glossary CSV export into the JSON shape the app publishes.
+ * Every column in the CSV's own header row becomes a field, verbatim —
+ * nothing is dropped or renamed (blank trailing header cells, which real
+ * exports sometimes have from a trailing `,,`, are excluded from
+ * `fieldNames`/`entries` but preserved as empty strings in `headerRow`).
  * @param {string} csvText
  * @returns {GlossaryCsvResult}
  */
 export function csvToGlossaryEntries(csvText) {
   const rows = parseCsv(csvText)
   if (rows.length === 0) {
-    return { entries: [], droppedRows: [], unmappedHeaders: [] }
+    return { entries: [], droppedRows: [], headerRow: [], fieldNames: [] }
   }
 
-  const headerRow = rows[0]
+  const headerRow = rows[0].map((h) => h.trim())
+  const fieldNames = realFieldNames(headerRow)
+  // Column index -> field name, skipping blank header cells entirely
+  // (a blank-headed column's data is never read into any entry).
   /** @type {Array<string | null>} */
-  const columnFields = headerRow.map((h) => {
-    const key = h.trim().toLowerCase()
-    return HEADER_ALIASES[key] ?? null
-  })
-  const unmappedHeaders = headerRow.filter(
-    (h, idx) => h.trim() !== '' && columnFields[idx] == null,
-  )
+  const columnFields = headerRow.map((h) => (h.trim() !== '' ? h.trim() : null))
 
   /** @type {Array<Record<string, string>>} */
   const entries = []
@@ -160,16 +169,18 @@ export function csvToGlossaryEntries(csvText) {
 
     /** @type {Record<string, string>} */
     const entry = {}
-    for (const field of GLOSSARY_JSON_FIELDS) entry[field] = ''
+    for (const field of fieldNames) entry[field] = ''
     columnFields.forEach((field, idx) => {
       if (field) entry[field] = (raw[idx] ?? '').trim()
     })
 
-    if (!isRealEntry(entry)) {
+    if (!isRealEntry(entry, fieldNames)) {
+      const titleField = fieldNames[0]
+      const titleValue = titleField ? entry[titleField]?.trim() : ''
       droppedRows.push({
         line: r + 1,
-        reason: entry.Term?.trim()
-          ? `"${entry.Term.trim()}" has no definition or body content — likely a sheet section divider, not a real term`
+        reason: titleValue
+          ? `"${titleValue}" has no content in any other column — likely a sheet section divider, not a real entry`
           : 'empty row',
       })
       continue
@@ -178,25 +189,38 @@ export function csvToGlossaryEntries(csvText) {
     entries.push(entry)
   }
 
-  return { entries, droppedRows, unmappedHeaders }
+  return { entries, droppedRows, headerRow, fieldNames }
 }
 
 /**
  * Diffs a freshly-parsed CSV entry list against the currently-published
- * glossary (whatever shape it's in — old or new key names both handled)
- * so the upload preview can show what will actually change.
+ * glossary so the upload preview can show what will actually change.
+ * `currentEntries` is keyed by `currentTitleField` (whatever column 1
+ * WAS, per the currently-live config/app.glossaryTitles) and
+ * `nextEntries` by `nextFieldNames[0]` (whatever column 1 IS in the file
+ * just parsed) — these can genuinely differ if this publish is itself
+ * changing which column is the title, so using the wrong one for either
+ * side would silently mismatch every entry (everything shows as
+ * added+removed instead of correctly matched changed/unchanged pairs).
+ * Content comparison uses `nextFieldNames` (the new upload's own column
+ * list) — a field that existed in the old published data but isn't in
+ * the new header is a structural change (a dropped column), not
+ * something re-litigated per-row here.
  * @param {Array<Record<string, unknown>>} currentEntries
+ * @param {string} currentTitleField the CURRENTLY-PUBLISHED data's title field
  * @param {Array<Record<string, string>>} nextEntries
+ * @param {string[]} nextFieldNames the NEW upload's field names, in column order
  */
-export function diffGlossaryEntries(currentEntries, nextEntries) {
+export function diffGlossaryEntries(currentEntries, currentTitleField, nextEntries, nextFieldNames) {
+  const nextTitleField = nextFieldNames[0]
   const currentByTerm = new Map(
     currentEntries.map((e) => [
-      String(e.Term ?? '').trim().toLowerCase(),
+      String(currentTitleField ? e[currentTitleField] : '').trim().toLowerCase(),
       e,
     ]),
   )
   const nextByTerm = new Map(
-    nextEntries.map((e) => [e.Term.trim().toLowerCase(), e]),
+    nextEntries.map((e) => [(nextTitleField ? e[nextTitleField] : '').trim().toLowerCase(), e]),
   )
 
   const added = []
@@ -210,11 +234,8 @@ export function diffGlossaryEntries(currentEntries, nextEntries) {
       added.push(next)
       continue
     }
-    const isChanged = GLOSSARY_JSON_FIELDS.some((field) => {
-      const currVal =
-        field === 'Definition'
-          ? String(curr.Definition ?? curr['Basic Definition'] ?? '').trim()
-          : String(curr[field] ?? '').trim()
+    const isChanged = nextFieldNames.some((field) => {
+      const currVal = String(curr[field] ?? '').trim()
       return currVal !== (next[field] ?? '').trim()
     })
     if (isChanged) changed.push({ term: next, prev: curr })

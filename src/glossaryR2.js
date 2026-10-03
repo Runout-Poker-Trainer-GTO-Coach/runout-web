@@ -6,7 +6,11 @@
  */
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 
-const GLOSSARY_KEY = 'glossary/pokerGlossary.en.json'
+// v2 path (2026-09-16): the "NEW HEADINGS" sheet export uses its own
+// header names directly (Term / Short Definition / How it plays out /
+// The Value) instead of the old 4-field schema — see glossaryCsv.js. The
+// mobile app needs its own read path updated to this same key separately.
+const GLOSSARY_KEY = 'glossary/pokerGlossary.v2.en.json'
 
 /**
  * @typedef {{

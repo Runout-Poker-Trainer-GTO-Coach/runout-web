@@ -47,7 +47,7 @@ export function clearAdminSession() {
   }
 }
 
-/** @typedef {'users' | 'questions' | 'lesson-reports' | 'user-ideas' | 'experiments' | 'settings'} AdminSection */
+/** @typedef {'users' | 'questions' | 'lesson-reports' | 'beginner-flow-reports' | 'user-ideas' | 'glossary' | 'experiments' | 'experiment-results' | 'settings'} AdminSection */
 
 /** @returns {AdminSection} */
 export function readAdminSection() {
@@ -56,8 +56,11 @@ export function readAdminSection() {
     const v = sessionStorage.getItem(SECTION_KEY)
     if (v === 'questions') section = 'questions'
     else if (v === 'lesson-reports') section = 'lesson-reports'
+    else if (v === 'beginner-flow-reports') section = 'beginner-flow-reports'
     else if (v === 'user-ideas') section = 'user-ideas'
+    else if (v === 'glossary') section = 'glossary'
     else if (v === 'experiments') section = 'experiments'
+    else if (v === 'experiment-results') section = 'experiment-results'
     else if (v === 'settings') section = 'settings'
     else if (v === 'users' || v === 'audience') section = 'users'
   } catch {
@@ -80,8 +83,11 @@ export function persistAdminSection(section) {
       section === 'users' ||
       section === 'questions' ||
       section === 'lesson-reports' ||
+      section === 'beginner-flow-reports' ||
       section === 'user-ideas' ||
+      section === 'glossary' ||
       section === 'experiments' ||
+      section === 'experiment-results' ||
       section === 'settings'
     ) {
       sessionStorage.setItem(SECTION_KEY, section)

@@ -7,33 +7,42 @@ import {
   Eye,
   EyeOff,
   FileUp,
-  Filter,
   Loader2,
   Minus,
   Plus,
   RefreshCw,
   Search,
   SearchX,
-  Star,
   Upload,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { doc, increment, serverTimestamp, updateDoc } from 'firebase/firestore'
+import { doc, getDoc, increment, serverTimestamp, updateDoc } from 'firebase/firestore'
 import {
   db,
   settingsCollectionName,
   settingsDocumentId,
 } from './firebase'
-import { csvToGlossaryEntries, diffGlossaryEntries } from './glossaryCsv.js'
+import {
+  csvToGlossaryEntries,
+  deriveGlossaryTitles,
+  diffGlossaryEntries,
+} from './glossaryCsv.js'
 import { publishGlossaryToR2 } from './glossaryR2.js'
 
 /**
  * Public, unauthenticated JSON — same R2-hosted glossary the mobile app
- * reads from. No admin write path; this page is a read-only browser.
+ * reads from. v2 path (2026-09-16): entries use whatever header names the
+ * last-uploaded CSV had, verbatim — no fixed field-name schema. See
+ * glossaryCsv.js's csvToGlossaryEntries/deriveGlossaryTitles. Which field
+ * is the title/description/other is read from config/app.glossaryTitles
+ * (see `glossaryTitles` state below), not hardcoded here either. The
+ * mobile app's own read path needs updating to this same v2 key
+ * separately; this admin page's upload flow publishes here once that's
+ * ready.
  */
 const GLOSSARY_URL =
-  'https://pub-045157849fb842d7a7cc22bc4033169d.r2.dev/glossary/pokerGlossary.en.json'
+  'https://pub-045157849fb842d7a7cc22bc4033169d.r2.dev/glossary/pokerGlossary.v2.en.json'
 
 /** @param {unknown} v */
 function asStr(v) {
@@ -42,25 +51,37 @@ function asStr(v) {
   return String(v)
 }
 
-/** Count of ⭐ characters in the raw `Importance` string — 0 if blank/unset. */
-function importanceLevel(v) {
-  const s = asStr(v)
-  return [...s].filter((ch) => ch === '⭐').length
+/**
+ * @typedef {{ titleKey: string, descriptionKey: string, otherKeys: string[] }} GlossaryTitles
+ */
+
+/** Used only until config/app.glossaryTitles has loaded (or if it's
+ *  missing — e.g. before any v2 CSV has ever been published). Matches
+ *  today's actual published shape so the page still renders sensibly in
+ *  that brief window, but is never assumed correct going forward — the
+ *  Firestore value always wins once it resolves. */
+const FALLBACK_GLOSSARY_TITLES = /** @type {GlossaryTitles} */ ({
+  titleKey: 'Term',
+  descriptionKey: 'Short Definition',
+  otherKeys: ['How it plays out', 'The Value'],
+})
+
+/** Every non-title field this titles config knows about — description +
+ *  other. Used wherever "search/check every content field" is needed,
+ *  without hardcoding what those fields are actually called.
+ *  @param {GlossaryTitles} titles */
+function contentKeys(titles) {
+  return [titles.descriptionKey, ...titles.otherKeys].filter(Boolean)
 }
 
 /**
  * @param {Record<string, unknown>} row
  * @param {string} q lowercased query
+ * @param {GlossaryTitles} titles
  */
-function rowMatchesQuery(row, q) {
+function rowMatchesQuery(row, q, titles) {
   if (!q) return true
-  const fields = [
-    row.Term,
-    row.Definition,
-    row['Specific Situation'],
-    row['Why It Matters'],
-    row['Examples of Term Usage'],
-  ]
+  const fields = [row[titles.titleKey], ...contentKeys(titles).map((k) => row[k])]
   for (const f of fields) {
     if (f == null) continue
     if (String(f).toLowerCase().includes(q)) return true
@@ -70,17 +91,13 @@ function rowMatchesQuery(row, q) {
 
 /**
  * A handful of rows in the source sheet are section dividers (e.g. "Alias
- * rows below:") that carry a Term but no body content at all — not real
+ * rows below:") that carry a title but no body content at all — not real
  * glossary entries. Filtered out rather than rendered as empty cards.
  * @param {Record<string, unknown>} row
+ * @param {GlossaryTitles} titles
  */
-function hasBody(row) {
-  return Boolean(
-    asStr(row.Definition).trim() ||
-    asStr(row['Specific Situation']).trim() ||
-    asStr(row['Why It Matters']).trim() ||
-    asStr(row['Examples of Term Usage']).trim(),
-  )
+function hasBody(row, titles) {
+  return contentKeys(titles).some((k) => asStr(row[k]).trim())
 }
 
 export default function GlossaryPage() {
@@ -90,11 +107,18 @@ export default function GlossaryPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(/** @type {string | null} */(null))
   const [searchQuery, setSearchQuery] = useState('')
-  const [importanceFilter, setImportanceFilter] = useState('all')
   const [expandedIndex, setExpandedIndex] = useState(
     /** @type {number | null} */(null),
   )
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
+  // Which JSON field is the title/description/other content — read from
+  // config/app.glossaryTitles so this page's own display never hardcodes
+  // field names either, matching the fully-dynamic CSV upload path.
+  // Starts as the fallback (today's known-real shape) until the Firestore
+  // read resolves or is confirmed absent.
+  const [glossaryTitles, setGlossaryTitles] = useState(
+    /** @type {GlossaryTitles} */ (FALLBACK_GLOSSARY_TITLES),
+  )
 
   // Guards against a stale response landing after a newer one — relevant
   // once loadGlossary is also called manually (post-publish reload), not
@@ -128,36 +152,61 @@ export default function GlossaryPage() {
       })
   }, [])
 
+  // Reads config/app.glossaryTitles — best-effort. A missing doc, a
+  // missing field (pre-v2 publish), or a Firestore error all fall back to
+  // FALLBACK_GLOSSARY_TITLES silently; this config is a display-quality
+  // concern, not something that should block or error the page.
+  const loadGlossaryTitles = useCallback(() => {
+    if (!db) return Promise.resolve()
+    return getDoc(doc(db, settingsCollectionName, settingsDocumentId))
+      .then((snap) => {
+        const data = snap.data()
+        const t = data?.glossaryTitles
+        if (
+          t &&
+          typeof t.titleKey === 'string' &&
+          typeof t.descriptionKey === 'string' &&
+          Array.isArray(t.otherKeys)
+        ) {
+          setGlossaryTitles(t)
+        }
+      })
+      .catch(() => {
+        // Keep whatever's currently set (fallback, or a prior good read).
+      })
+  }, [])
+
   // No setLoading(true)/setError(null) here — `loading` already starts
   // true and `error` starts null, so resetting them on mount would be a
   // redundant synchronous setState inside the effect body.
   useEffect(() => {
     loadGlossary()
-  }, [loadGlossary])
+    loadGlossaryTitles()
+  }, [loadGlossary, loadGlossaryTitles])
 
   // A handful of rows are section dividers from the source sheet (e.g.
-  // "Alias rows below:") with a Term but no body — not real entries.
-  const usableTerms = useMemo(() => terms.filter(hasBody), [terms])
+  // "Alias rows below:") with a title but no body — not real entries.
+  const usableTerms = useMemo(
+    () => terms.filter((t) => hasBody(t, glossaryTitles)),
+    [terms, glossaryTitles],
+  )
 
   const displayTerms = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     return terms
       .map((t, index) => ({ term: t, index }))
-      .filter(({ term }) => hasBody(term))
-      .filter(({ term }) => {
-        if (importanceFilter === 'all') return true
-        return importanceLevel(term.Importance) === Number(importanceFilter)
-      })
-      .filter(({ term }) => rowMatchesQuery(term, q))
+      .filter(({ term }) => hasBody(term, glossaryTitles))
+      .filter(({ term }) => rowMatchesQuery(term, q, glossaryTitles))
       .sort((a, b) =>
-        asStr(a.term.Term).localeCompare(asStr(b.term.Term), undefined, {
-          sensitivity: 'base',
-        }),
+        asStr(a.term[glossaryTitles.titleKey]).localeCompare(
+          asStr(b.term[glossaryTitles.titleKey]),
+          undefined,
+          { sensitivity: 'base' },
+        ),
       )
-  }, [terms, searchQuery, importanceFilter])
+  }, [terms, searchQuery, glossaryTitles])
 
-  const hasActiveFilters =
-    searchQuery.trim() !== '' || importanceFilter !== 'all'
+  const hasActiveFilters = searchQuery.trim() !== ''
 
   return (
     <div className="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -188,30 +237,6 @@ export default function GlossaryPage() {
           </div>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-stretch">
-          <div className="relative w-full min-w-[11rem] sm:w-auto">
-            <Filter
-              className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"
-              strokeWidth={2}
-              aria-hidden
-            />
-            <label className="sr-only" htmlFor="glossary-importance-filter">
-              Filter by importance
-            </label>
-            <select
-              id="glossary-importance-filter"
-              value={importanceFilter}
-              onChange={(e) => setImportanceFilter(e.target.value)}
-              className="w-full cursor-pointer appearance-none rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-900 shadow-sm outline-none transition hover:border-slate-300 focus:border-violet-400 focus:ring-4 focus:ring-violet-500/15 sm:min-w-[11rem]"
-            >
-              <option value="all">All importance</option>
-              <option value="5">⭐⭐⭐⭐⭐ (5)</option>
-              <option value="4">⭐⭐⭐⭐ (4)</option>
-              <option value="3">⭐⭐⭐ (3)</option>
-              <option value="2">⭐⭐ (2)</option>
-              <option value="1">⭐ (1)</option>
-              <option value="0">Unrated</option>
-            </select>
-          </div>
           <div className="relative w-full min-w-[220px] sm:min-w-[22rem] sm:max-w-xl sm:flex-1 lg:max-w-2xl">
             <Search
               className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400"
@@ -275,6 +300,7 @@ export default function GlossaryPage() {
             <GlossaryTermCard
               key={index}
               term={term}
+              titles={glossaryTitles}
               expanded={expandedIndex === index}
               onToggle={() =>
                 setExpandedIndex((curr) => (curr === index ? null : index))
@@ -287,12 +313,14 @@ export default function GlossaryPage() {
       {uploadModalOpen ? (
         <GlossaryUploadModal
           currentTerms={terms}
+          currentTitles={glossaryTitles}
           onClose={() => setUploadModalOpen(false)}
           onPublished={() => {
             setUploadModalOpen(false)
             setLoading(true)
             setError(null)
             loadGlossary()
+            loadGlossaryTitles()
           }}
         />
       ) : null}
@@ -301,19 +329,28 @@ export default function GlossaryPage() {
 }
 
 /**
+ * Renders whatever fields `titles` says exist — nothing here is a
+ * hardcoded field name. `titles.titleKey` is the card's name,
+ * `titles.descriptionKey` is the collapsed-state preview + the first
+ * expanded section, and `titles.otherKeys` become however many further
+ * sections the current data actually has, each labeled with its own
+ * literal column text (e.g. "How it plays out" renders verbatim as its
+ * own section header) rather than a fixed translated label — a future
+ * CSV with different or additional "other" columns needs no code change
+ * here to show up correctly.
  * @param {{
  *   term: Record<string, unknown>
+ *   titles: GlossaryTitles
  *   expanded: boolean
  *   onToggle: () => void
  * }} props
  */
-function GlossaryTermCard({ term, expanded, onToggle }) {
-  const name = asStr(term.Term).trim()
-  const stars = importanceLevel(term.Importance)
-  const definition = asStr(term.Definition).trim()
-  const specificSituation = asStr(term['Specific Situation']).trim()
-  const whyItMatters = asStr(term['Why It Matters']).trim()
-  const examples = asStr(term['Examples of Term Usage']).trim()
+function GlossaryTermCard({ term, titles, expanded, onToggle }) {
+  const name = asStr(term[titles.titleKey]).trim()
+  const description = asStr(term[titles.descriptionKey]).trim()
+  const otherSections = titles.otherKeys
+    .map((key) => ({ key, body: asStr(term[key]).trim() }))
+    .filter((s) => s.body)
 
   return (
     <li className="list-none overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm ring-1 ring-slate-900/[0.02]">
@@ -332,27 +369,12 @@ function GlossaryTermCard({ term, expanded, onToggle }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <p className="text-sm font-semibold text-slate-900">{name}</p>
-            {stars > 0 ? (
-              <span
-                className="inline-flex items-center gap-0.5 text-amber-500"
-                title={`Importance: ${stars} of 5`}
-              >
-                {Array.from({ length: stars }, (_, i) => (
-                  <Star
-                    key={i}
-                    className="size-3 shrink-0 fill-amber-400 text-amber-400"
-                    strokeWidth={0}
-                    aria-hidden
-                  />
-                ))}
-              </span>
-            ) : null}
           </div>
           {!expanded ? (
             <p className="mt-0.5 line-clamp-1 text-xs text-slate-500">
-              {definition || (
+              {description || (
                 <span className="italic text-slate-400">
-                  (no definition provided)
+                  (no description provided)
                 </span>
               )}
             </p>
@@ -364,49 +386,27 @@ function GlossaryTermCard({ term, expanded, onToggle }) {
         <div className="space-y-3 border-t border-slate-100 bg-slate-50/60 px-4 py-3.5 sm:px-5">
           <div>
             <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-              Definition
+              {titles.descriptionKey}
             </dt>
             <dd className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
-              {definition || (
+              {description || (
                 <span className="italic text-slate-400">
-                  (no definition provided)
+                  (no description provided)
                 </span>
               )}
             </dd>
           </div>
 
-          {specificSituation ? (
-            <div>
+          {otherSections.map((s) => (
+            <div key={s.key}>
               <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                Specific Situation
+                {s.key}
               </dt>
               <dd className="mt-1 whitespace-pre-wrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm leading-relaxed text-slate-700">
-                {specificSituation}
+                {s.body}
               </dd>
             </div>
-          ) : null}
-
-          {whyItMatters ? (
-            <div>
-              <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                Why It Matters
-              </dt>
-              <dd className="mt-1 whitespace-pre-wrap rounded-lg border border-violet-100 bg-violet-50/50 px-3 py-2 text-sm leading-relaxed text-violet-950">
-                {whyItMatters}
-              </dd>
-            </div>
-          ) : null}
-
-          {examples ? (
-            <div>
-              <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                Examples of Term Usage
-              </dt>
-              <dd className="mt-1 whitespace-pre-wrap text-sm italic leading-relaxed text-slate-600">
-                {examples}
-              </dd>
-            </div>
-          ) : null}
+          ))}
         </div>
       ) : null}
     </li>
@@ -442,11 +442,12 @@ function readSessionCreds() {
  * never written to disk, never bundled, cleared on tab close).
  * @param {{
  *   currentTerms: Array<Record<string, unknown>>
+ *   currentTitles: GlossaryTitles
  *   onClose: () => void
  *   onPublished: () => void
  * }} props
  */
-function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
+function GlossaryUploadModal({ currentTerms, currentTitles, onClose, onPublished }) {
   const [step, setStep] = useState(
     /** @type {'pick' | 'preview' | 'credentials' | 'publishing' | 'done'} */(
       'pick'
@@ -462,7 +463,14 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
   const [droppedRows, setDroppedRows] = useState(
     /** @type {Array<{ line: number, reason: string }>} */([]),
   )
-  const [unmappedHeaders, setUnmappedHeaders] = useState(
+  // The CSV's own real (non-blank) column names, in order — column 1 is
+  // always the title field, column 2 the description field, everything
+  // after that is "other". Published to config/app.glossaryTitles
+  // alongside the R2 data (via deriveGlossaryTitles) so the app knows
+  // which JSON key to render as the title vs. description vs. extra
+  // detail; also diffGlossaryEntries' third argument, since there's no
+  // fixed field list anymore to fall back on.
+  const [fieldNames, setFieldNames] = useState(
     /** @type {string[]} */([]),
   )
   const [showDropped, setShowDropped] = useState(false)
@@ -507,8 +515,8 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
 
   const diff = useMemo(() => {
     if (!parsedEntries) return null
-    return diffGlossaryEntries(currentTerms, parsedEntries)
-  }, [currentTerms, parsedEntries])
+    return diffGlossaryEntries(currentTerms, currentTitles.titleKey, parsedEntries, fieldNames)
+  }, [currentTerms, currentTitles, parsedEntries, fieldNames])
 
   const handleFile = useCallback((file) => {
     if (!file) return
@@ -520,17 +528,20 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
     reader.onload = () => {
       try {
         const text = String(reader.result ?? '')
-        const { entries, droppedRows: dropped, unmappedHeaders: unmapped } =
-          csvToGlossaryEntries(text)
+        const {
+          entries,
+          droppedRows: dropped,
+          fieldNames: parsedFieldNames,
+        } = csvToGlossaryEntries(text)
         if (entries.length === 0) {
           setParseError(
-            'No usable glossary entries found in this file. Check that it has Term, Definition, and the other expected columns.',
+            'No usable glossary entries found in this file. Every row needs content in its first column (the title) plus at least one other column.',
           )
           return
         }
         setParsedEntries(entries)
         setDroppedRows(dropped)
-        setUnmappedHeaders(unmapped)
+        setFieldNames(parsedFieldNames)
         setStep('preview')
       } catch (e) {
         setParseError(e?.message || 'Failed to parse this CSV file')
@@ -554,7 +565,14 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
       secretAccessKey: import.meta.env.VITE_R2_SECRET_ACCESS_KEY,
       bucketName: import.meta.env.VITE_R2_BUCKET_NAME
     }
-    console.log(creds)
+
+    // Column 1 is always the title field, column 2 always the description
+    // field; everything after that is "other" — derived fresh from
+    // whatever CSV was just uploaded (see glossaryCsv.js's
+    // deriveGlossaryTitles), not hardcoded to this sheet's exact header
+    // names, so a future differently-shaped glossary export still works
+    // without a code change anywhere in this pipeline.
+    const glossaryTitles = deriveGlossaryTitles(fieldNames)
 
     try {
       await publishGlossaryToR2(parsedEntries, creds)
@@ -567,6 +585,7 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
         try {
           await updateDoc(doc(db, settingsCollectionName, settingsDocumentId), {
             glossarySyncVersion: increment(1),
+            glossaryTitles,
             updatedAt: serverTimestamp(),
           })
         } catch (e) {
@@ -587,6 +606,7 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
     }
   }, [
     parsedEntries,
+    fieldNames,
     accountId,
     accessKeyId,
     secretAccessKey,
@@ -662,8 +682,9 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
                     Click to choose a CSV file
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    Expected columns: Term, Importance, Definition, Specific
-                    Situation, Why It Matters, Examples Usage
+                    Any header row works — column 1 becomes the title,
+                    column 2 the description, and every column after that
+                    shows as its own section.
                   </p>
                 </div>
               </button>
@@ -715,16 +736,35 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
                 />
               </div>
 
-              {unmappedHeaders.length > 0 ? (
-                <div className="flex gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
-                  <AlertTriangle
-                    className="mt-0.5 size-4 shrink-0 text-amber-600"
-                    strokeWidth={2}
-                  />
-                  <span>
-                    Unrecognized column{unmappedHeaders.length === 1 ? '' : 's'}{' '}
-                    ignored: {unmappedHeaders.join(', ')}
-                  </span>
+              {fieldNames.length > 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs text-slate-600">
+                  <p className="font-semibold text-slate-700">
+                    Column roles detected from this file's header row:
+                  </p>
+                  <p className="mt-1">
+                    <span className="font-mono text-slate-800">{fieldNames[0]}</span>{' '}
+                    → title
+                    {fieldNames[1] ? (
+                      <>
+                        {' · '}
+                        <span className="font-mono text-slate-800">{fieldNames[1]}</span>{' '}
+                        → description
+                      </>
+                    ) : null}
+                    {fieldNames.length > 2 ? (
+                      <>
+                        {' · other: '}
+                        {fieldNames
+                          .slice(2)
+                          .map((f) => (
+                            <span key={f} className="font-mono text-slate-800">
+                              {f}
+                            </span>
+                          ))
+                          .reduce((acc, el, i) => (i === 0 ? [el] : [...acc, ', ', el]), [])}
+                      </>
+                    ) : null}
+                  </p>
                 </div>
               ) : null}
 
@@ -766,7 +806,7 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
                   </p>
                   <p className="mt-1.5 text-xs leading-relaxed text-rose-800">
                     {diff.removed
-                      .map((r) => asStr(r.Term).trim())
+                      .map((r) => asStr(r[currentTitles.titleKey]).trim())
                       .join(', ')}
                   </p>
                 </div>
@@ -792,7 +832,7 @@ function GlossaryUploadModal({ currentTerms, onClose, onPublished }) {
                   {showChanged ? (
                     <ul className="max-h-56 space-y-1 overflow-y-auto border-t border-slate-200 px-4 py-2.5 text-[11px] text-slate-600">
                       {diff.changed.map(({ term }) => (
-                        <li key={term.Term}>{term.Term}</li>
+                        <li key={term[fieldNames[0]]}>{term[fieldNames[0]]}</li>
                       ))}
                     </ul>
                   ) : null}
